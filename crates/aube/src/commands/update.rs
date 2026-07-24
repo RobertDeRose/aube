@@ -298,7 +298,8 @@ pub async fn run(
             if all_specifiers.contains_key(name.as_str()) {
                 if ignored_updates.contains(name.as_str()) {
                     return Err(miette!(
-                        "package '{name}' is ignored by updateConfig.ignoreDependencies"
+                        "package '{name}' is ignored by update.ignoreDeps \
+                         (or legacy updateConfig.ignoreDependencies)"
                     ));
                 }
                 continue;
@@ -322,7 +323,8 @@ pub async fn run(
             }
             if ignored_updates.contains(name.as_str()) {
                 return Err(miette!(
-                    "package '{name}' is ignored by updateConfig.ignoreDependencies"
+                    "package '{name}' is ignored by update.ignoreDeps \
+                     (or legacy updateConfig.ignoreDependencies)"
                 ));
             }
             indirect_arg_names.insert(name.clone());
@@ -340,7 +342,9 @@ pub async fn run(
             .filter(|p| all_specifiers.contains_key(p.as_str()))
             .filter(|p| {
                 if ignored_updates.contains(p.as_str()) {
-                    tracing::info!("skipping {p} (updateConfig.ignoreDependencies)");
+                    tracing::info!(
+                        "skipping {p} (update.ignoreDeps or legacy updateConfig.ignoreDependencies)"
+                    );
                     false
                 } else {
                     true
@@ -1163,36 +1167,67 @@ fn resolve_update_settings(
     cwd: &std::path::Path,
     manifest: &aube_manifest::PackageJson,
 ) -> miette::Result<UpdateSettings> {
-    let mut ignored: BTreeSet<String> = manifest.update_ignore_dependencies().into_iter().collect();
-    let rewrites_specifier = with_update_settings_ctx(cwd, |ctx| {
-        if let Some(from_settings) = aube_settings::resolved::update_config_ignore_dependencies(ctx)
-        {
-            ignored.extend(from_settings);
-        }
-        aube_settings::resolved::update_rewrites_specifier(ctx)
-    })?;
-    Ok(UpdateSettings {
-        ignored,
-        rewrites_specifier,
+    with_update_settings_ctx(cwd, |ctx| UpdateSettings {
+        ignored: ignored_update_dependencies_from_ctx(ctx, manifest),
+        rewrites_specifier: aube_settings::resolved::update_rewrites_specifier(ctx),
     })
+}
+
+pub(super) fn ignored_update_dependencies(
+    cwd: &std::path::Path,
+    manifest: &aube_manifest::PackageJson,
+) -> miette::Result<BTreeSet<String>> {
+    with_update_settings_ctx(cwd, |ctx| {
+        ignored_update_dependencies_from_ctx(ctx, manifest)
+    })
+}
+
+pub(super) fn ignored_update_dependencies_from_ctx(
+    ctx: &aube_settings::ResolveCtx<'_>,
+    manifest: &aube_manifest::PackageJson,
+) -> BTreeSet<String> {
+    let configured = aube_settings::resolved::update_ignore_deps(ctx)
+        .map(|canonical| (true, canonical))
+        .or_else(|| {
+            aube_settings::resolved::update_config_ignore_dependencies(ctx)
+                .map(|legacy| (false, legacy))
+        });
+    if let Some((true, canonical)) = configured {
+        return canonical.into_iter().collect();
+    }
+    let mut ignored: BTreeSet<String> = manifest.update_ignore_dependencies().into_iter().collect();
+    if let Some((false, legacy)) = configured {
+        ignored.extend(legacy);
+    }
+    ignored
 }
 
 fn with_update_settings_ctx<T>(
     cwd: &std::path::Path,
     f: impl FnOnce(&aube_settings::ResolveCtx<'_>) -> T,
 ) -> miette::Result<T> {
-    let files = crate::commands::FileSources::load(cwd);
     // `pnpm-workspace.yaml` lives at the workspace root, not in
     // sub-packages. Filtered runs (`update -r`) call us with the
     // sub-package as cwd, so an unwalked load returns an empty map and
     // `updateConfig.ignoreDependencies` silently drops every entry.
     // Discussion #602: zod was in the ignore list yet appeared in the
-    // recursive picker because of this miss. Fall back to cwd if no
-    // workspace root is found (single-project case).
+    // recursive picker because of this miss. Load root project sources,
+    // then append member project sources so member-local values retain
+    // their normal precedence. Fall back to cwd if no workspace root is
+    // found (single-project case).
     let yaml_root = crate::dirs::find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let (_workspace_config, raw_workspace) = aube_manifest::workspace::load_both(&yaml_root)
-        .into_diagnostic()
-        .wrap_err("failed to read workspace config")?;
+    let mut files = crate::commands::FileSources::load(&yaml_root);
+    if cwd != yaml_root {
+        files.extend_project_sources(cwd);
+    }
+    let raw_workspace = aube_manifest::workspace::load_raw(&yaml_root).unwrap_or_else(|error| {
+        tracing::debug!(
+            %error,
+            workspace_root = %yaml_root.display(),
+            "ignoring invalid workspace config while resolving update settings"
+        );
+        BTreeMap::new()
+    });
     let env = aube_settings::values::process_env();
     let ctx = files.ctx(&raw_workspace, env, &[]);
     Ok(f(&ctx))
@@ -1670,6 +1705,85 @@ fn exact_pin_version(spec: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_update_ignores_replace_package_json_legacy_values() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages: []\nupdate:\n  ignoreDeps:\n    - canonical\n",
+        )
+        .unwrap();
+        let manifest = aube_manifest::PackageJson::parse(
+            &dir.path().join("package.json"),
+            r#"{"updateConfig":{"ignoreDependencies":["legacy"]}}"#.to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ignored_update_dependencies(dir.path(), &manifest).unwrap(),
+            BTreeSet::from(["canonical".to_string()])
+        );
+    }
+
+    #[test]
+    fn malformed_workspace_yaml_does_not_block_package_json_update_ignores() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pnpm-workspace.yaml"), "packages: [\n").unwrap();
+        let manifest = aube_manifest::PackageJson::parse(
+            &dir.path().join("package.json"),
+            r#"{"updateConfig":{"ignoreDependencies":["legacy"]}}"#.to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ignored_update_dependencies(dir.path(), &manifest).unwrap(),
+            BTreeSet::from(["legacy".to_string()])
+        );
+    }
+
+    #[test]
+    fn workspace_members_read_update_ignores_from_root_npmrc() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = dir.path().join("packages/app");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - packages/*\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".npmrc"),
+            "update.ignoreDeps=[\"canonical\"]\n",
+        )
+        .unwrap();
+        let manifest = aube_manifest::PackageJson::default();
+
+        assert_eq!(
+            ignored_update_dependencies(&member, &manifest).unwrap(),
+            BTreeSet::from(["canonical".to_string()])
+        );
+    }
+
+    #[test]
+    fn workspace_member_update_ignores_override_root_project_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = dir.path().join("packages/app");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - packages/*\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".npmrc"), "update.ignoreDeps=[\"root\"]\n").unwrap();
+        std::fs::write(member.join(".npmrc"), "update.ignoreDeps=[\"member\"]\n").unwrap();
+        let manifest = aube_manifest::PackageJson::default();
+
+        assert_eq!(
+            ignored_update_dependencies(&member, &manifest).unwrap(),
+            BTreeSet::from(["member".to_string()])
+        );
+    }
 
     fn locked(name: &str, version: &str) -> aube_lockfile::LockedPackage {
         aube_lockfile::LockedPackage {

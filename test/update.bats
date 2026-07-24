@@ -187,7 +187,36 @@ EOF
 
 	run aube update is-odd
 	assert_failure
-	assert_output --partial "ignored by updateConfig.ignoreDependencies"
+	assert_output --partial "ignored by update.ignoreDeps"
+}
+
+@test "aube update: workspace update.ignoreDeps takes precedence" {
+	_setup_outdated_project
+	run aube add is-even@0.1.0
+	assert_success
+	node -e '
+		const fs = require("fs");
+		const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+		pkg.dependencies["is-even"] = ">=0.1.0";
+		fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+	'
+	cat >pnpm-workspace.yaml <<'EOF'
+packages:
+  - "."
+update:
+  ignoreDeps:
+    - is-odd
+updateConfig:
+  ignoreDependencies:
+    - is-even
+EOF
+
+	run aube update
+	assert_success
+	run grep 'is-odd@0.1.2' aube-lock.yaml
+	assert_success
+	run grep 'is-even@1.0.0' aube-lock.yaml
+	assert_success
 }
 
 @test "aube update: reports already latest when nothing to update" {
