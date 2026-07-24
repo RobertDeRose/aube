@@ -120,13 +120,22 @@ default trigger list is:
 
 - `next`
 - `nuxt`
-- `vite`
-- `vitepress`
 - `parcel`
 
 When that happens, install still succeeds and aube prints a warning. Repeat
 installs of that project just won't share materialized package directories
 across projects.
+
+Vite 8.1 and newer supports shared virtual stores. aube writes the effective
+store location to `node_modules/.modules.yaml`, including in linked workspace
+importers, so Vite can add the directory to its development-server filesystem
+allow-list. The file is pnpm-compatible integration metadata; aube continues to
+use `node_modules/.aube-state` as its own install state.
+
+For older Vite versions, aube materializes the legacy Vite dependency and its
+framework ancestry in the project-local virtual store, then backports Vite
+8.1's metadata lookup into that local copy. Unrelated dependency branches stay
+in the global virtual store, and aube never modifies the shared Vite package.
 
 To add a package to the trigger list, append entries to
 `disableGlobalVirtualStoreForPackages` in `.npmrc`:
