@@ -37,47 +37,64 @@ fn ensure_shims(shim_dir: &Path) -> miette::Result<()> {
             shim_dir.display()
         )
     })?;
+    #[cfg(not(unix))]
     let exe = std::env::current_exe().map_err(|e| {
         miette!(
             code = aube_codes::errors::ERR_AUBE_SHIM_CREATE_FAILED,
             "failed to locate current executable for shim creation: {e}"
         )
     })?;
+    #[cfg(unix)]
+    for name in crate::tool_shims::TOOL_SHIMS {
+        write_shim(shim_dir, &crate::tool_shims::shim_file_name(name))?;
+    }
+    #[cfg(not(unix))]
     for name in crate::tool_shims::TOOL_SHIMS {
         write_shim(shim_dir, &crate::tool_shims::shim_file_name(name), &exe)?;
     }
     Ok(())
 }
 
-fn write_shim(shim_dir: &Path, name: &str, exe: &Path) -> miette::Result<()> {
+#[cfg(unix)]
+fn write_shim(shim_dir: &Path, name: &str) -> miette::Result<()> {
     let dest = shim_dir.join(name);
     let _ = std::fs::remove_file(&dest);
-    create_executable_alias(exe, &dest).map_err(|e| {
+    write_dispatcher_shim(&dest, name, aube_util::prog()).map_err(|e| {
         miette!(
             code = aube_codes::errors::ERR_AUBE_SHIM_CREATE_FAILED,
-            "failed to create shim {} -> {}: {e}",
+            "failed to create shim {}: {e}",
             dest.display(),
-            exe.display()
         )
     })
 }
 
 #[cfg(unix)]
-fn create_executable_alias(exe: &Path, dest: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(exe, dest).or_else(|_| {
-        std::fs::hard_link(exe, dest).or_else(|_| {
-            std::fs::copy(exe, dest)?;
-            Ok(())
-        })
-    })
+fn write_dispatcher_shim(dest: &Path, name: &str, program: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let program = shell_double_quote(program);
+    let script = format!(
+        "#!/bin/sh\n# aube-tool-shim v1\nexec {program} {} {name} \"$@\"\n",
+        crate::tool_shims::DISPATCH_ARG
+    );
+    std::fs::write(dest, script)?;
+    std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
 }
 
 #[cfg(not(unix))]
-fn create_executable_alias(exe: &Path, dest: &Path) -> std::io::Result<()> {
-    std::fs::hard_link(exe, dest).or_else(|_| {
-        std::fs::copy(exe, dest)?;
-        Ok(())
-    })
+fn write_shim(shim_dir: &Path, name: &str, exe: &Path) -> miette::Result<()> {
+    let dest = shim_dir.join(name);
+    let _ = std::fs::remove_file(&dest);
+    std::fs::hard_link(exe, &dest)
+        .or_else(|_| std::fs::copy(exe, &dest).map(|_| ()))
+        .map_err(|e| {
+            miette!(
+                code = aube_codes::errors::ERR_AUBE_SHIM_CREATE_FAILED,
+                "failed to create shim {} -> {}: {e}",
+                dest.display(),
+                exe.display()
+            )
+        })
 }
 
 fn render_activation(shell: ActivateShell, shim_dir: &Path) -> String {
@@ -154,6 +171,41 @@ mod tests {
         assert_eq!(
             shell_double_quote(r#"/tmp/a"b$c\d`e"#),
             r#""/tmp/a\"b\$c\\d\`e""#
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_path_resolved_dispatcher_shims() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("shim tempdir should be created");
+        ensure_shims(dir.path()).expect("shims should be created");
+        let node = dir.path().join("node");
+        assert!(!node.is_symlink());
+        assert_ne!(
+            std::fs::metadata(&node)
+                .expect("node shim should have metadata")
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+        assert_eq!(
+            std::fs::read_to_string(&node).expect("node shim should be readable after creation"),
+            "#!/bin/sh\n# aube-tool-shim v1\nexec \"aube\" __aube-shim node \"$@\"\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dispatcher_shim_uses_embedder_program() {
+        let dir = tempfile::tempdir().expect("shim tempdir should be created");
+        let node = dir.path().join("node");
+        write_dispatcher_shim(&node, "node", "nublike").expect("embedder shim should be created");
+        assert_eq!(
+            std::fs::read_to_string(node).expect("embedder shim should be readable"),
+            "#!/bin/sh\n# aube-tool-shim v1\nexec \"nublike\" __aube-shim node \"$@\"\n"
         );
     }
 }
