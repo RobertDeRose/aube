@@ -6516,6 +6516,18 @@
             "global": false
           },
           {
+            "name": "lockfile-only",
+            "usage": "--lockfile-only",
+            "help": "List packages from the lockfile only, without checking node_modules",
+            "help_first_line": "List packages from the lockfile only, without checking node_modules",
+            "short": [],
+            "long": [
+              "lockfile-only"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "long",
             "usage": "--long",
             "help": "Show version and path for each entry",
@@ -6931,6 +6943,18 @@
             "global": false
           },
           {
+            "name": "lockfile-only",
+            "usage": "--lockfile-only",
+            "help": "List packages from the lockfile only, without checking node_modules",
+            "help_first_line": "List packages from the lockfile only, without checking node_modules",
+            "short": [],
+            "long": [
+              "lockfile-only"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "long",
             "usage": "--long",
             "help": "Show version and path for each entry",
@@ -6960,7 +6984,7 @@
         "mounts": [],
         "effect": "read",
         "hide": false,
-        "help": "Print the installed dependency tree",
+        "help": "Print the resolved dependency tree",
         "name": "list",
         "aliases": [
           "ls"
@@ -7091,6 +7115,18 @@
             "short": [],
             "long": [
               "json"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "lockfile-only",
+            "usage": "--lockfile-only",
+            "help": "List packages from the lockfile only, without checking node_modules",
+            "help_first_line": "List packages from the lockfile only, without checking node_modules",
+            "short": [],
+            "long": [
+              "lockfile-only"
             ],
             "hide": false,
             "global": false
