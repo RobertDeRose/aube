@@ -475,6 +475,8 @@ fn run_global(args: &ListArgs) -> miette::Result<()> {
             println!("{}", layout.pkg_dir.display());
             let last_idx = rows.len().saturating_sub(1);
             for (i, (name, version, path)) in rows.iter().enumerate() {
+                let name = aube_util::terminal::sanitize_inline(name);
+                let version = aube_util::terminal::sanitize_inline(version);
                 let connector = if i == last_idx {
                     "└── "
                 } else {
@@ -537,6 +539,8 @@ fn render_default_for_importer(
 ) -> miette::Result<()> {
     let project_name = manifest.name.as_deref().unwrap_or("(unnamed)");
     let project_version = manifest.version.as_deref().unwrap_or("");
+    let project_name = aube_util::terminal::sanitize_inline(project_name);
+    let project_version = aube_util::terminal::sanitize_inline(project_version);
     let project_path = cwd.display();
     println!("{project_name}@{project_version} {project_path}");
     println!();
@@ -549,6 +553,7 @@ fn render_default_for_importer(
     }
 
     let grouped = group_roots(graph, importer, filter, args.pattern.as_deref());
+    let sanitize_tree = graph_needs_terminal_sanitization(graph);
     if grouped.prod.is_empty() && grouped.dev.is_empty() && grouped.optional.is_empty() {
         println!("(no dependencies)");
         return Ok(());
@@ -556,7 +561,14 @@ fn render_default_for_importer(
 
     if !grouped.prod.is_empty() {
         println!("dependencies:");
-        render_section(graph, &grouped.prod, args, vstore_max_len, vstore_prefix)?;
+        render_section(
+            graph,
+            &grouped.prod,
+            args,
+            vstore_max_len,
+            vstore_prefix,
+            sanitize_tree,
+        )?;
     }
     if !grouped.optional.is_empty() {
         if !grouped.prod.is_empty() {
@@ -569,6 +581,7 @@ fn render_default_for_importer(
             args,
             vstore_max_len,
             vstore_prefix,
+            sanitize_tree,
         )?;
     }
     if !grouped.dev.is_empty() {
@@ -576,7 +589,14 @@ fn render_default_for_importer(
             println!();
         }
         println!("devDependencies:");
-        render_section(graph, &grouped.dev, args, vstore_max_len, vstore_prefix)?;
+        render_section(
+            graph,
+            &grouped.dev,
+            args,
+            vstore_max_len,
+            vstore_prefix,
+            sanitize_tree,
+        )?;
     }
 
     Ok(())
@@ -633,6 +653,7 @@ fn render_section(
     args: &ListArgs,
     vstore_max_len: usize,
     vstore_prefix: &str,
+    sanitize_tree: bool,
 ) -> miette::Result<()> {
     let last_idx = roots.len().saturating_sub(1);
     for (i, dep) in roots.iter().enumerate() {
@@ -640,18 +661,31 @@ fn render_section(
         let connector = if is_last { "└── " } else { "├── " };
         let pkg = graph.get_package(&dep.dep_path);
         let version = pkg.map(|p| p.version.as_str()).unwrap_or("?");
+        let name = if sanitize_tree {
+            aube_util::terminal::sanitize_inline(&dep.name)
+        } else {
+            std::borrow::Cow::Borrowed(dep.name.as_str())
+        };
+        let version = if sanitize_tree {
+            aube_util::terminal::sanitize_inline(version)
+        } else {
+            std::borrow::Cow::Borrowed(version)
+        };
         let extra = if args.long {
-            format!(
-                "  ({vstore_prefix}{})",
-                aube_lockfile::dep_path_filename::dep_path_to_filename(
-                    &dep.dep_path,
-                    vstore_max_len,
-                )
-            )
+            let filename = aube_lockfile::dep_path_filename::dep_path_to_filename(
+                &dep.dep_path,
+                vstore_max_len,
+            );
+            let filename = if sanitize_tree {
+                aube_util::terminal::sanitize_inline(&filename)
+            } else {
+                std::borrow::Cow::Borrowed(filename.as_str())
+            };
+            format!("  ({vstore_prefix}{filename})")
         } else {
             String::new()
         };
-        println!("{connector}{} {version}{extra}", dep.name);
+        println!("{connector}{name} {version}{extra}");
 
         if args.depth.includes_transitive()
             && let Some(pkg) = pkg
@@ -670,6 +704,7 @@ fn render_section(
                 &mut visited,
                 vstore_max_len,
                 vstore_prefix,
+                sanitize_tree,
             );
         }
     }
@@ -686,6 +721,7 @@ fn render_subtree(
     visited: &mut BTreeSet<String>,
     vstore_max_len: usize,
     vstore_prefix: &str,
+    sanitize_tree: bool,
 ) {
     if current_depth > args.depth.max {
         return;
@@ -696,11 +732,26 @@ fn render_subtree(
         let is_last = i == last;
         let connector = if is_last { "└── " } else { "├── " };
         let dep_path = format!("{name}@{version}");
-        let extra = if args.long {
-            format!(
-                "  ({vstore_prefix}{})",
-                aube_lockfile::dep_path_filename::dep_path_to_filename(&dep_path, vstore_max_len,)
+        let (display_name, display_version) = if sanitize_tree {
+            (
+                aube_util::terminal::sanitize_inline(name),
+                aube_util::terminal::sanitize_inline(version),
             )
+        } else {
+            (
+                std::borrow::Cow::Borrowed(name.as_str()),
+                std::borrow::Cow::Borrowed(version.as_str()),
+            )
+        };
+        let extra = if args.long {
+            let filename =
+                aube_lockfile::dep_path_filename::dep_path_to_filename(&dep_path, vstore_max_len);
+            let filename = if sanitize_tree {
+                aube_util::terminal::sanitize_inline(&filename)
+            } else {
+                std::borrow::Cow::Borrowed(filename.as_str())
+            };
+            format!("  ({vstore_prefix}{filename})")
         } else {
             String::new()
         };
@@ -711,7 +762,7 @@ fn render_subtree(
         } else {
             ""
         };
-        println!("{prefix}{connector}{name} {version}{extra}{cycle_marker}");
+        println!("{prefix}{connector}{display_name} {display_version}{extra}{cycle_marker}");
 
         if cycle_marker.is_empty() {
             visited.insert(dep_path.clone());
@@ -726,11 +777,25 @@ fn render_subtree(
                     visited,
                     vstore_max_len,
                     vstore_prefix,
+                    sanitize_tree,
                 );
             }
             visited.remove(&dep_path);
         }
     }
+}
+
+fn graph_needs_terminal_sanitization(graph: &LockfileGraph) -> bool {
+    graph.importers.values().flatten().any(|dep| {
+        aube_util::terminal::needs_inline_sanitization(&dep.name)
+            || aube_util::terminal::needs_inline_sanitization(&dep.dep_path)
+    }) || graph.packages.values().any(|pkg| {
+        aube_util::terminal::needs_inline_sanitization(&pkg.version)
+            || pkg.dependencies.iter().any(|(name, version)| {
+                aube_util::terminal::needs_inline_sanitization(name)
+                    || aube_util::terminal::needs_inline_sanitization(version)
+            })
+    })
 }
 
 /// JSON output: a single array with one entry per root importer (matching
@@ -1034,5 +1099,40 @@ mod tests {
             a_obj.get("dependencies").is_none(),
             "cycled node should not recurse further"
         );
+    }
+
+    #[test]
+    fn tree_sanitization_scan_detects_formatting_in_dependency_labels() {
+        let safe = LockfileGraph {
+            packages: BTreeMap::from([(
+                "root@1.0.0".to_string(),
+                mk_pkg("root", "1.0.0", &[("child", "2.0.0")]),
+            )]),
+            ..Default::default()
+        };
+        assert!(!graph_needs_terminal_sanitization(&safe));
+
+        let unsafe_path_graph = LockfileGraph {
+            importers: BTreeMap::from([(
+                ".".to_string(),
+                vec![DirectDep {
+                    name: "child".to_string(),
+                    dep_path: "child@2.0.0\u{202E}".to_string(),
+                    dep_type: DepType::Production,
+                    specifier: Some("2.0.0".to_string()),
+                }],
+            )]),
+            ..Default::default()
+        };
+        assert!(graph_needs_terminal_sanitization(&unsafe_path_graph));
+
+        let unsafe_graph = LockfileGraph {
+            packages: BTreeMap::from([(
+                "root@1.0.0".to_string(),
+                mk_pkg("root", "1.0.0", &[("chi\u{202E}ld", "2.0.0")]),
+            )]),
+            ..Default::default()
+        };
+        assert!(graph_needs_terminal_sanitization(&unsafe_graph));
     }
 }
