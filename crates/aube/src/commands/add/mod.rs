@@ -127,6 +127,8 @@ pub async fn add_to_project(
             let mut install_options = install::InstallOptions::with_mode(install::FrozenMode::Fix);
             install_options.project_dir = Some(project_dir.to_path_buf());
             install_options.ignore_scripts = options.ignore_scripts;
+            install_options.run_dev_preinstall = true;
+            install_options.script_command = "add";
             install_options.force = options.force;
             install_options.dep_selection = options.dep_selection;
             install_options.osv_transitive_check = options.osv_transitive_check && !options.offline;
@@ -245,7 +247,7 @@ pub struct AddArgs {
         value_parser = parse_deny_build_value,
     )]
     pub deny_build: Vec<String>,
-    /// Skip lifecycle scripts (no-op; aube already skips by default).
+    /// Skip root and approved dependency lifecycle scripts.
     #[arg(long, hide = true)]
     pub ignore_scripts: bool,
     /// Install without persisting the dependency to `package.json`.
@@ -364,7 +366,7 @@ pub async fn run(
         save_workspace_protocol,
         no_save_workspace_protocol,
         workspace,
-        ignore_scripts: _,
+        ignore_scripts,
         no_save,
         ignore_workspace_root_check,
         save_catalog,
@@ -567,6 +569,9 @@ pub async fn run(
     let mut install_opts =
         install::InstallOptions::with_mode(super::chained_frozen_mode(install::FrozenMode::Fix));
     apply_dangerously_allow_all_builds(&mut install_opts, dangerously_allow_all_builds);
+    install_opts.ignore_scripts = ignore_scripts;
+    install_opts.run_dev_preinstall = true;
+    install_opts.script_command = "add";
     install_opts.osv_transitive_check = true;
     let pipeline_result: miette::Result<()> =
         install::run_with_project_lock(install_opts, &lock).await;

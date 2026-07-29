@@ -80,7 +80,10 @@ pub(super) async fn run(
             &mut install_opts,
             args.dangerously_allow_all_builds,
         );
+        install_opts.ignore_scripts = args.ignore_scripts;
         install_opts.workspace_filter = filter.clone();
+        install_opts.run_dev_preinstall = true;
+        install_opts.script_command = "add";
         // See the sibling `aube add` codepath for why this flag is set:
         // live OSV API on the resolved transitives.
         install_opts.osv_transitive_check = true;

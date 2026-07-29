@@ -52,7 +52,8 @@ pub(crate) use lifecycle::{
     run_dep_lifecycle_scripts,
 };
 use lifecycle::{
-    resolve_link_strategy, run_import_on_blocking, run_root_lifecycle, validate_required_scripts,
+    resolve_link_strategy, run_import_on_blocking, run_root_lifecycle, run_root_lifecycle_script,
+    validate_required_scripts,
 };
 
 pub(crate) fn resolve_active_lockfile_dir(
@@ -621,7 +622,7 @@ async fn run_inner(opts: InstallOptions, cwd: std::path::PathBuf) -> miette::Res
         .await?;
     }
     if !opts.ignore_scripts {
-        super::configure_script_settings(&settings_ctx, Some("install"));
+        super::configure_script_settings(&settings_ctx, Some(opts.script_command));
     }
 
     let layout::InstallLayoutConfig {
@@ -737,6 +738,22 @@ async fn run_inner(opts: InstallOptions, cwd: std::path::PathBuf) -> miette::Res
             (build_policy, policy_warnings)
         };
     let inherited_build_policy_for_git_prepare = Some(std::sync::Arc::new(build_policy.clone()));
+
+    // pnpm's root-only pre-resolution hook. Unlike the ordinary
+    // `preinstall` lifecycle below, this runs exactly once from the
+    // lockfile/workspace root and never fans out to member manifests.
+    // The warm fast path returned above, so an already-current repeat
+    // install naturally skips it.
+    if opts.run_dev_preinstall {
+        run_dev_preinstall(
+            &cwd,
+            opts.ignore_scripts,
+            opts.dry_run,
+            lockfile_only_effective,
+            None,
+        )
+        .await?;
+    }
 
     // 1b. Project `preinstall` lifecycle hooks.
     //     Workspace installs run the hook for every physical importer
@@ -2489,6 +2506,37 @@ async fn run_inner(opts: InstallOptions, cwd: std::path::PathBuf) -> miette::Res
         );
     }
     Ok(())
+}
+
+/// Run pnpm's root-only pre-resolution hook from the workspace/lockfile root.
+///
+/// Kept as a command-level boundary because `update` resolves before chaining
+/// into the install pipeline and must invoke the same hook before its resolver.
+pub(crate) async fn run_dev_preinstall(
+    project_dir: &std::path::Path,
+    ignore_scripts: bool,
+    dry_run: bool,
+    lockfile_only: bool,
+    initialize_environment_for: Option<&str>,
+) -> miette::Result<()> {
+    if ignore_scripts || dry_run || lockfile_only {
+        return Ok(());
+    }
+    let root_dir =
+        crate::dirs::find_workspace_root(project_dir).unwrap_or_else(|| project_dir.to_path_buf());
+    if let Some(command) = initialize_environment_for {
+        crate::runtime::ensure_for_cwd(&root_dir).await?;
+        super::configure_script_settings_for_cwd(&root_dir, Some(command))?;
+    }
+    let root_manifest = super::load_manifest_or_default(&root_dir)?;
+    let modules_dir_name = super::resolve_modules_dir_name_for_cwd(&root_dir);
+    run_root_lifecycle_script(
+        &root_dir,
+        &modules_dir_name,
+        &root_manifest,
+        "pnpm:devPreinstall",
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -341,6 +341,8 @@ pub async fn run(
             build_policy_override: None,
             workspace_filter: aube_workspace::selector::EffectiveFilter::default(),
             skip_root_lifecycle: false,
+            run_dev_preinstall: true,
+            script_command: "install",
             // Deploys are lockfile-driven by definition. Don't
             // force the live API; install::run's fresh-resolution
             // detection still kicks in if the resolver picks a
