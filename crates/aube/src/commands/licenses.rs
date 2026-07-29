@@ -106,7 +106,60 @@ pub async fn run(args: LicensesArgs) -> miette::Result<()> {
     let filtered = graph.filter_deps(|d| filter.keeps(d.dep_type));
 
     let aube_dir = super::resolve_virtual_store_dir_for_cwd(&cwd);
-    let rows = collect_rows(&aube_dir, &filtered, args.long);
+    // Prefer the recorded layout over current config: the install may have
+    // used a one-shot `--node-linker=hoisted` override.
+    let installed_layout = crate::state::read_state_layout(&cwd)
+        .or_else(|| crate::state::read_default_state_layout(&cwd));
+    let installed_hoisted = installed_layout
+        .as_ref()
+        .map(|layout| matches!(layout.linker, crate::state::InstallLayoutMode::Hoisted))
+        .unwrap_or_else(|| {
+            super::with_settings_ctx(&cwd, |ctx| {
+                matches!(
+                    aube_settings::resolved::node_linker(ctx),
+                    aube_settings::resolved::NodeLinker::Hoisted
+                )
+            })
+        });
+    let hoisted_placements = if installed_hoisted {
+        let modules_dir_name = installed_layout
+            .as_ref()
+            .map(|layout| layout.modules_dir_name.as_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                installed_layout
+                    .as_ref()
+                    .and_then(|layout| infer_legacy_modules_dir_name(layout, &graph))
+            })
+            // A dependency-free legacy snapshot has no direct entry from
+            // which to infer the directory. The value is immaterial because
+            // there are no placements, so use the historical default.
+            .unwrap_or_else(|| "node_modules".to_string());
+        let recorded_hoisting_limits = installed_layout
+            .as_ref()
+            .and_then(|layout| layout.hoisting_limits)
+            .map(|limits| match limits {
+                crate::state::InstallHoistingLimits::None => aube_linker::HoistingLimits::None,
+                crate::state::InstallHoistingLimits::Workspaces => {
+                    aube_linker::HoistingLimits::Workspaces
+                }
+                crate::state::InstallHoistingLimits::Dependencies => {
+                    aube_linker::HoistingLimits::Dependencies
+                }
+            });
+        // Reconstruct from the full installed graph. Filtering first could
+        // change which conflicting version won a hoisted placement.
+        Some(match recorded_hoisting_limits {
+            Some(limits) => {
+                aube_linker::HoistedPlacements::from_graph(&cwd, &graph, &modules_dir_name, limits)?
+            }
+            None => legacy_hoisted_placements(&cwd, &graph, &modules_dir_name)?,
+        })
+    } else {
+        None
+    };
+    let rows = collect_rows(&aube_dir, &filtered, hoisted_placements.as_ref(), args.long);
 
     if args.json {
         render_json(&rows)?;
@@ -117,11 +170,69 @@ pub async fn run(args: LicensesArgs) -> miette::Result<()> {
     Ok(())
 }
 
-/// Walk every package in the filtered graph and read its license from the
-/// virtual-store manifest. Packages whose manifest can't be read (e.g.,
-/// `node_modules` not materialized yet) fall back to "UNKNOWN" so one
-/// missing file doesn't sink the whole report.
-fn collect_rows(aube_dir: &Path, graph: &LockfileGraph, long: bool) -> Vec<Row> {
+/// Infer `modulesDir` from the root importer's recorded direct entries in
+/// state written before the field was persisted explicitly.
+fn infer_legacy_modules_dir_name(
+    layout: &crate::state::InstallLayoutState,
+    graph: &LockfileGraph,
+) -> Option<String> {
+    let entries = layout.direct_entries.get(".")?;
+    let deps = graph.importers.get(".")?;
+    entries.iter().zip(deps).find_map(|(entry, dep)| {
+        let mut modules_dir = PathBuf::from(entry);
+        for _ in Path::new(&dep.name).components() {
+            if !modules_dir.pop() {
+                return None;
+            }
+        }
+        Some(modules_dir.to_string_lossy().into_owned())
+    })
+}
+
+/// Legacy layout state did not record `hoistingLimits`. Reconstruct every
+/// possible plan and choose the one that matches the most package directories
+/// on disk, instead of consulting mutable current settings.
+fn legacy_hoisted_placements(
+    cwd: &Path,
+    graph: &LockfileGraph,
+    modules_dir_name: &str,
+) -> Result<aube_linker::HoistedPlacements, aube_linker::Error> {
+    let mut best = None;
+    for limits in [
+        aube_linker::HoistingLimits::None,
+        aube_linker::HoistingLimits::Workspaces,
+        aube_linker::HoistingLimits::Dependencies,
+    ] {
+        let placements =
+            aube_linker::HoistedPlacements::from_graph(cwd, graph, modules_dir_name, limits)?;
+        let matches = graph
+            .packages
+            .keys()
+            .filter(|dep_path| placements.package_dir(dep_path).is_some())
+            .count();
+        if best
+            .as_ref()
+            .is_none_or(|(best_matches, _)| matches > *best_matches)
+        {
+            best = Some((matches, placements));
+        }
+    }
+    Ok(best.map_or_else(
+        aube_linker::HoistedPlacements::default,
+        |(_, placements)| placements,
+    ))
+}
+
+/// Walk every package in the filtered graph and read its installed manifest,
+/// using hoisted placements when applicable. Packages whose manifest can't be
+/// read (e.g., `node_modules` not materialized yet) fall back to "UNKNOWN" so
+/// one missing file doesn't sink the whole report.
+fn collect_rows(
+    aube_dir: &Path,
+    graph: &LockfileGraph,
+    hoisted_placements: Option<&aube_linker::HoistedPlacements>,
+    long: bool,
+) -> Vec<Row> {
     // Deduplicate by (name, version) so peer-context duplicates
     // (`react@18.2.0` vs `react@18.2.0(prop-types@15.8.1)`) only show once.
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
@@ -131,7 +242,10 @@ fn collect_rows(aube_dir: &Path, graph: &LockfileGraph, long: bool) -> Vec<Row> 
         if !seen.insert((pkg.name.clone(), pkg.version.clone())) {
             continue;
         }
-        let pkg_dir = virtual_store_pkg_dir(aube_dir, &pkg.dep_path, &pkg.name);
+        let pkg_dir = hoisted_placements
+            .and_then(|placements| placements.package_dir(&pkg.dep_path))
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| virtual_store_pkg_dir(aube_dir, &pkg.dep_path, &pkg.name));
         let license = read_license(&pkg_dir);
         rows.push(Row {
             name: pkg.name.clone(),
