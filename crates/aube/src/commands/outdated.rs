@@ -465,13 +465,19 @@ async fn collect_rows(
         let client = client.clone();
         let cache_dir = cache_dir.clone();
         let name = dep.name.clone();
+        let registry_name = graph
+            .get_package(&dep.dep_path)
+            .map(|pkg| pkg.registry_name().to_string())
+            .unwrap_or_else(|| name.clone());
         set.spawn(async move {
             let result = if needs_time {
                 client
-                    .fetch_packument_with_time_cached(&name, &cache_dir)
+                    .fetch_packument_with_time_cached(&registry_name, &cache_dir)
                     .await
             } else {
-                client.fetch_packument_cached(&name, &cache_dir).await
+                client
+                    .fetch_packument_cached(&registry_name, &cache_dir)
+                    .await
             };
             (name, result)
         });
@@ -484,12 +490,10 @@ async fn collect_rows(
     }
 
     let mut rows: Vec<Row> = Vec::new();
+    let mut blocked_updates = BTreeMap::new();
     for dep in &roots {
         let packument = packuments.remove(&dep.name);
-        let current = match graph.get_package(&dep.dep_path) {
-            Some(p) => p.version.clone(),
-            None => "(missing)".to_string(),
-        };
+        let current = graph.get_package(&dep.dep_path).map(|p| p.version.clone());
         let packument = match packument {
             Some(Ok(p)) => p,
             Some(Err(e)) => {
@@ -502,22 +506,36 @@ async fn collect_rows(
         // `latest` dist-tag (common on private registries) doesn't get
         // silently flagged as outdated. Drift detection treats an
         // unknown latest the same as "matches current".
-        let latest = super::policy_version(
+        let latest_info = super::policy_version_info(
             &packument,
-            &dep.name,
+            &packument.name,
             "latest",
             minimum_release_age.as_ref(),
+            current.as_deref(),
         );
+        if let Some(blocked) = latest_info.blocked {
+            super::record_age_gated_update(&mut blocked_updates, dep.name.clone(), blocked);
+        }
+        let latest = latest_info.selected;
 
         // Wanted = the version an update would resolve inside the manifest
         // range after applying minimumReleaseAge. Fall back to `current` when
         // the range is unparseable so we don't lie.
-        let wanted = dep
-            .specifier
-            .as_deref()
-            .and_then(|spec| {
-                super::policy_version(&packument, &dep.name, spec, minimum_release_age.as_ref())
-            })
+        let wanted_info = dep.specifier.as_deref().map(|spec| {
+            super::policy_version_info(
+                &packument,
+                &packument.name,
+                spec,
+                minimum_release_age.as_ref(),
+                current.as_deref(),
+            )
+        });
+        if let Some(blocked) = wanted_info.as_ref().and_then(|info| info.blocked.as_ref()) {
+            super::record_age_gated_update(&mut blocked_updates, dep.name.clone(), blocked.clone());
+        }
+        let current = current.unwrap_or_else(|| "(missing)".to_string());
+        let wanted = wanted_info
+            .and_then(|info| info.selected)
             .unwrap_or_else(|| current.clone());
 
         let latest_known = latest.is_some();
@@ -537,6 +555,7 @@ async fn collect_rows(
             });
         }
     }
+    super::warn_age_gated_updates(&blocked_updates);
 
     Ok((rows, true))
 }
