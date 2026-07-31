@@ -6,6 +6,19 @@ use super::side_effects_cache::{
     SideEffectsCacheConfig, SideEffectsCacheEntry, SideEffectsCacheRestore,
 };
 
+/// Pinned snapshot of pnpm's lifecycle-script trust list. The release-plz PR
+/// workflow refreshes it with `scripts/update-trusted-dependencies.bash`.
+static DEFAULT_TRUSTED_DEPENDENCIES: std::sync::LazyLock<Box<[String]>> =
+    std::sync::LazyLock::new(|| {
+        serde_json::from_str::<Vec<String>>(include_str!(
+            "../../../assets/trusted-dependencies.json"
+        ))
+        // WHY: this is a repository-owned generated asset validated by the
+        // sync script; invalid JSON is a broken build artifact, not user input.
+        .unwrap_or_else(|error| panic!("invalid bundled trusted-dependencies.json: {error}"))
+        .into_boxed_slice()
+    });
+
 /// Run a root-package lifecycle hook, announcing it to the user if defined
 /// and turning aube_scripts::Error into a miette::Report with context.
 /// Silent when the hook isn't defined in package.json.
@@ -54,8 +67,8 @@ pub(super) async fn run_root_lifecycle_script(
 ///   flat list (pnpm's canonical denylist)
 /// - the `--dangerously-allow-all-builds` escape hatch
 ///
-/// Workspace-level entries in the `allowBuilds` map take precedence
-/// over the manifest map for the same pattern, matching pnpm. The
+/// Workspace and manifest entries in the `allowBuilds` map merge for the same
+/// pattern, with an explicit denial from either source taking precedence. The
 /// flat lists are pure append — deny always wins at `decide()` time.
 pub(crate) fn build_policy_from_sources(
     manifest: &aube_manifest::PackageJson,
@@ -81,7 +94,7 @@ pub(crate) fn build_policy_from_manifest_sources<'a>(
     Vec<aube_scripts::BuildPolicyError>,
 ) {
     let mut merged = std::collections::BTreeMap::new();
-    let mut only_built = Vec::new();
+    let mut only_built = DEFAULT_TRUSTED_DEPENDENCIES.to_vec();
     let mut never_built = Vec::new();
     for manifest in manifests {
         for (pattern, allow) in manifest.pnpm_allow_builds() {
@@ -95,7 +108,10 @@ pub(crate) fn build_policy_from_manifest_sources<'a>(
         never_built.extend(manifest.pnpm_never_built_dependencies());
     }
     for (k, v) in workspace.allow_builds_raw() {
-        merged.insert(k, v);
+        merged
+            .entry(k)
+            .and_modify(|existing| merge_allow_build(existing, v.clone()))
+            .or_insert(v);
     }
     only_built.extend(workspace.only_built_dependencies.iter().cloned());
     never_built.extend(workspace.never_built_dependencies.iter().cloned());
@@ -1207,6 +1223,72 @@ pub(super) fn unreviewed_dep_builds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pnpm_trusted_dependencies_are_allowed_by_default() {
+        let manifest = aube_manifest::PackageJson::default();
+        let workspace = aube_manifest::WorkspaceConfig::default();
+        let (policy, warnings) = build_policy_from_sources(&manifest, &workspace, false);
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            policy.decide("esbuild", "0.28.1"),
+            aube_scripts::AllowDecision::Allow
+        );
+        assert_eq!(
+            policy.decide("sharp", "0.35.2"),
+            aube_scripts::AllowDecision::Allow
+        );
+        assert_eq!(
+            policy.decide("not-on-the-pnpm-trusted-list", "0.28.1"),
+            aube_scripts::AllowDecision::Unspecified
+        );
+    }
+
+    #[test]
+    fn explicit_deny_overrides_default_trust() {
+        let manifest = manifest_with_allow_build("esbuild", false);
+        let workspace = aube_manifest::WorkspaceConfig::default();
+        let (policy, warnings) = build_policy_from_sources(&manifest, &workspace, false);
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            policy.decide("esbuild", "0.28.1"),
+            aube_scripts::AllowDecision::Deny
+        );
+    }
+
+    #[test]
+    fn project_deny_overrides_workspace_allow() {
+        let manifest = manifest_with_allow_build("esbuild", false);
+        let mut workspace = aube_manifest::WorkspaceConfig::default();
+        workspace
+            .allow_builds
+            .insert("esbuild".to_string(), yaml_serde::Value::Bool(true));
+        let (policy, warnings) = build_policy_from_sources(&manifest, &workspace, false);
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            policy.decide("esbuild", "0.28.1"),
+            aube_scripts::AllowDecision::Deny
+        );
+    }
+
+    #[test]
+    fn workspace_deny_overrides_default_trust() {
+        let manifest = aube_manifest::PackageJson::default();
+        let mut workspace = aube_manifest::WorkspaceConfig::default();
+        workspace
+            .allow_builds
+            .insert("esbuild".to_string(), yaml_serde::Value::Bool(false));
+        let (policy, warnings) = build_policy_from_sources(&manifest, &workspace, false);
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            policy.decide("esbuild", "0.28.1"),
+            aube_scripts::AllowDecision::Deny
+        );
+    }
 
     #[test]
     fn member_allow_build_conflict_denies() {
