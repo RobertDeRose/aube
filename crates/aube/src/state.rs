@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 const DEFAULT_STATE_DIR: &str = "node_modules";
 const INSTALL_STATE_FILE_NAME: &str = "state.json";
 const FRESH_STATE_FILE_NAME: &str = "fresh.json";
+const LICENSE_STATE_FILE_NAME: &str = "licenses.json";
 
 /// The install-state directory name, `.<name>-state`. Standalone aube:
 /// `.aube-state`.
@@ -241,8 +242,21 @@ pub struct InstallLayoutState {
     pub modules_dir_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hoisting_limits: Option<InstallHoistingLimits>,
+    /// Filename limit used when materializing the virtual store. This must be
+    /// read from install state because an environment or CLI override may no
+    /// longer be present when a later command inspects the installed tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_store_dir_max_length: Option<usize>,
     pub direct_entries: BTreeMap<String, Vec<String>>,
     pub packages: BTreeMap<String, InstalledPackageState>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct InstallLicenseState {
+    fingerprint: String,
+    pub licenses: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub linked_package_dirs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -694,6 +708,7 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
     // to verify; empty for the default shared layout.
     let (member_lockfile_hashes, member_lockfile_meta) = collect_member_lockfile_state(project_dir);
     let local_directory_hashes = collect_local_directory_hashes(project_dir, layout.graph)?;
+    let license_fingerprint = license_state_fingerprint(&graph_lthash, &package_content_hashes);
 
     let state = InstallState {
         lockfile_hash,
@@ -715,11 +730,72 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
     };
 
     let fresh_state = FreshnessState::from(&state);
+    if read_package_licenses(&state_path)
+        .as_ref()
+        .is_none_or(|licenses| licenses.fingerprint != license_fingerprint)
+    {
+        let license_state =
+            collect_package_license_state(project_dir, &layout, license_fingerprint);
+        let license_json = serde_json::to_vec(&license_state)?;
+        aube_util::fs_atomic::atomic_write(&license_state_file(&state_path), &license_json)?;
+    }
     let json = serde_json::to_string_pretty(&state)?;
     aube_util::fs_atomic::atomic_write(&install_state_file(&state_path), json.as_bytes())?;
     write_fresh_state(&state_path, &fresh_state)?;
 
     Ok(())
+}
+
+fn license_state_fingerprint(
+    graph_lthash: &str,
+    package_content_hashes: &BTreeMap<String, String>,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(graph_lthash.as_bytes());
+    for (dep_path, content_hash) in package_content_hashes {
+        hasher.update(&(dep_path.len() as u64).to_le_bytes());
+        hasher.update(dep_path.as_bytes());
+        hasher.update(content_hash.as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn collect_package_license_state(
+    project_dir: &Path,
+    layout: &WriteStateLayout<'_>,
+    fingerprint: String,
+) -> InstallLicenseState {
+    let mut licenses = BTreeMap::new();
+    let mut linked_package_dirs = BTreeMap::new();
+    for (dep_path, pkg) in &layout.graph.packages {
+        let package_dir = match pkg.local_source.as_ref() {
+            Some(aube_lockfile::LocalSource::Link(path)) => {
+                let package_dir = project_dir.join(path);
+                linked_package_dirs.insert(
+                    dep_path.clone(),
+                    relative_path_or_original(&package_dir, project_dir),
+                );
+                package_dir
+            }
+            _ => crate::commands::install::materialized_pkg_dir(
+                layout.aube_dir,
+                dep_path,
+                &pkg.name,
+                layout.virtual_store_dir_max_length,
+                layout.placements,
+            ),
+        };
+        if let Some(license) =
+            crate::commands::licenses::read_license(&package_dir).or_else(|| pkg.license.clone())
+        {
+            licenses.insert(dep_path.clone(), license);
+        }
+    }
+    InstallLicenseState {
+        fingerprint,
+        licenses,
+        linked_package_dirs,
+    }
 }
 
 fn collect_local_directory_hashes(
@@ -784,6 +860,17 @@ pub fn read_state_package_content_hashes(project_dir: &Path) -> Option<BTreeMap<
 /// should take the normal path once to refresh derived metadata.
 pub fn read_state_layout(project_dir: &Path) -> Option<InstallLayoutState> {
     read_state(&state_dir(project_dir))?.layout
+}
+
+/// Read licenses captured at install time without adding them to the main
+/// freshness state parsed by every warm install.
+pub fn read_state_package_licenses(project_dir: &Path) -> InstallLicenseState {
+    let state_path = state_dir(project_dir);
+    read_package_licenses(&state_path)
+        .or_else(|| {
+            read_package_licenses(&project_dir.join(DEFAULT_STATE_DIR).join(state_dir_name()))
+        })
+        .unwrap_or_default()
 }
 
 /// Read layout state from the default `node_modules` location.
@@ -916,6 +1003,15 @@ fn install_state_file(state_path: &Path) -> PathBuf {
     state_path.join(INSTALL_STATE_FILE_NAME)
 }
 
+fn license_state_file(state_path: &Path) -> PathBuf {
+    state_path.join(LICENSE_STATE_FILE_NAME)
+}
+
+fn read_package_licenses(state_path: &Path) -> Option<InstallLicenseState> {
+    let content = std::fs::read(license_state_file(state_path)).ok()?;
+    serde_json::from_slice(&content).ok()
+}
+
 fn fresh_state_file(state_path: &Path) -> PathBuf {
     state_path.join(FRESH_STATE_FILE_NAME)
 }
@@ -991,29 +1087,27 @@ impl InstallLayoutState {
             .into_iter()
             .flat_map(|deps| deps.iter().map(|dep| dep.dep_path.clone()))
             .collect();
-        for dep_path in direct_dep_paths {
-            let Some(pkg) = layout.graph.packages.get(&dep_path) else {
-                continue;
-            };
+        for (dep_path, pkg) in &layout.graph.packages {
             let is_link = matches!(
                 pkg.local_source.as_ref(),
                 Some(aube_lockfile::LocalSource::Link(_))
             );
-            let package_json_path = match pkg.local_source.as_ref() {
-                Some(aube_lockfile::LocalSource::Link(path)) => {
-                    project_dir.join(path).join("package.json")
-                }
+            let package_dir = match pkg.local_source.as_ref() {
+                Some(aube_lockfile::LocalSource::Link(path)) => project_dir.join(path),
                 _ => crate::commands::install::materialized_pkg_dir(
                     layout.aube_dir,
-                    &dep_path,
+                    dep_path,
                     &pkg.name,
                     layout.virtual_store_dir_max_length,
                     layout.placements,
-                )
-                .join("package.json"),
+                ),
             };
+            if !direct_dep_paths.contains(dep_path) {
+                continue;
+            }
+            let package_json_path = package_dir.join("package.json");
             packages.insert(
-                dep_path,
+                dep_path.clone(),
                 InstalledPackageState {
                     name: pkg.name.clone(),
                     version: pkg.version.clone(),
@@ -1028,6 +1122,7 @@ impl InstallLayoutState {
             linker,
             modules_dir_name: layout.modules_dir_name.to_string(),
             hoisting_limits,
+            virtual_store_dir_max_length: Some(layout.virtual_store_dir_max_length),
             direct_entries,
             packages,
         }
@@ -1413,6 +1508,7 @@ mod tests {
                 linker: InstallLayoutMode::Isolated,
                 modules_dir_name: String::new(),
                 hoisting_limits: None,
+                virtual_store_dir_max_length: None,
                 direct_entries: BTreeMap::new(),
                 packages: BTreeMap::from([(
                     "is-odd@3.0.1".to_string(),
@@ -1460,6 +1556,7 @@ mod tests {
             linker: InstallLayoutMode::Isolated,
             modules_dir_name: String::new(),
             hoisting_limits: None,
+            virtual_store_dir_max_length: None,
             direct_entries: BTreeMap::from([(
                 ".".to_string(),
                 vec!["node_modules/@scope/api".to_string()],
@@ -1491,6 +1588,7 @@ mod tests {
             linker: InstallLayoutMode::Isolated,
             modules_dir_name: String::new(),
             hoisting_limits: None,
+            virtual_store_dir_max_length: None,
             direct_entries: BTreeMap::from([(
                 ".".to_string(),
                 vec!["node_modules/@scope/api".to_string()],
@@ -1609,6 +1707,7 @@ mod tests {
                 linker: InstallLayoutMode::Isolated,
                 modules_dir_name: String::new(),
                 hoisting_limits: None,
+                virtual_store_dir_max_length: None,
                 direct_entries: BTreeMap::new(),
                 packages: BTreeMap::new(),
             }),

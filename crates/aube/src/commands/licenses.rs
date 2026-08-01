@@ -9,7 +9,7 @@ use super::DepFilter;
 use aube_lockfile::LockfileGraph;
 use clap::Args;
 use miette::{Context, IntoDiagnostic};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -81,6 +81,11 @@ struct Row {
     path: Option<String>,
 }
 
+pub(super) struct InstalledPackageMetadata {
+    pub license: Option<String>,
+    pub path: PathBuf,
+}
+
 pub async fn run(args: LicensesArgs) -> miette::Result<()> {
     args.network.install_overrides();
     // `licenses ls` is pnpm-compat; it behaves identically to bare `licenses`.
@@ -104,17 +109,39 @@ pub async fn run(args: LicensesArgs) -> miette::Result<()> {
 
     let filter = DepFilter::from_flags(args.prod, args.dev);
     let filtered = graph.filter_deps(|d| filter.keeps(d.dep_type));
+    let installed_metadata =
+        collect_installed_metadata(&cwd, &graph, filtered.packages.keys().map(String::as_str))?;
+    let rows = collect_rows(&filtered, &installed_metadata, args.long);
 
-    let aube_dir = super::resolve_virtual_store_dir_for_cwd(&cwd);
+    if args.json {
+        render_json(&rows)?;
+    } else {
+        render_grouped(&rows, args.long);
+    }
+
+    Ok(())
+}
+
+pub(super) fn collect_installed_metadata<'a>(
+    cwd: &Path,
+    graph: &LockfileGraph,
+    dep_paths: impl IntoIterator<Item = &'a str>,
+) -> miette::Result<BTreeMap<String, InstalledPackageMetadata>> {
+    let aube_dir = super::resolve_virtual_store_dir_for_cwd(cwd);
     // Prefer the recorded layout over current config: the install may have
     // used a one-shot `--node-linker=hoisted` override.
-    let installed_layout = crate::state::read_state_layout(&cwd)
-        .or_else(|| crate::state::read_default_state_layout(&cwd));
+    let installed_layout = crate::state::read_state_layout(cwd)
+        .or_else(|| crate::state::read_default_state_layout(cwd));
+    let installed_licenses = crate::state::read_state_package_licenses(cwd);
+    let virtual_store_dir_max_length = installed_layout
+        .as_ref()
+        .and_then(|layout| layout.virtual_store_dir_max_length)
+        .unwrap_or_else(|| super::resolve_virtual_store_dir_max_length_for_cwd(cwd));
     let installed_hoisted = installed_layout
         .as_ref()
         .map(|layout| matches!(layout.linker, crate::state::InstallLayoutMode::Hoisted))
         .unwrap_or_else(|| {
-            super::with_settings_ctx(&cwd, |ctx| {
+            super::with_settings_ctx(cwd, |ctx| {
                 matches!(
                     aube_settings::resolved::node_linker(ctx),
                     aube_settings::resolved::NodeLinker::Hoisted
@@ -130,7 +157,7 @@ pub async fn run(args: LicensesArgs) -> miette::Result<()> {
             .or_else(|| {
                 installed_layout
                     .as_ref()
-                    .and_then(|layout| infer_legacy_modules_dir_name(layout, &graph))
+                    .and_then(|layout| infer_legacy_modules_dir_name(layout, graph))
             })
             // A dependency-free legacy snapshot has no direct entry from
             // which to infer the directory. The value is immaterial because
@@ -152,22 +179,100 @@ pub async fn run(args: LicensesArgs) -> miette::Result<()> {
         // change which conflicting version won a hoisted placement.
         Some(match recorded_hoisting_limits {
             Some(limits) => {
-                aube_linker::HoistedPlacements::from_graph(&cwd, &graph, &modules_dir_name, limits)?
+                aube_linker::HoistedPlacements::from_graph(cwd, graph, &modules_dir_name, limits)?
             }
-            None => legacy_hoisted_placements(&cwd, &graph, &modules_dir_name)?,
+            None => legacy_hoisted_placements(cwd, graph, &modules_dir_name)?,
         })
     } else {
         None
     };
-    let rows = collect_rows(&aube_dir, &filtered, hoisted_placements.as_ref(), args.long);
 
-    if args.json {
-        render_json(&rows)?;
-    } else {
-        render_grouped(&rows, args.long);
+    let mut metadata = BTreeMap::new();
+    for dep_path in dep_paths {
+        let Some(pkg) = graph.get_package(dep_path) else {
+            continue;
+        };
+        let recorded_link_dir = installed_layout
+            .as_ref()
+            .and_then(|layout| layout.packages.get(dep_path))
+            .filter(|package| package.link)
+            .and_then(|package| {
+                cwd.join(&package.package_json_path)
+                    .parent()
+                    .map(Path::to_path_buf)
+            });
+        let linked = recorded_link_dir.is_some()
+            || matches!(
+                pkg.local_source.as_ref(),
+                Some(aube_lockfile::LocalSource::Link(_))
+            );
+        let path = match (pkg.local_source.as_ref(), recorded_link_dir) {
+            (Some(aube_lockfile::LocalSource::Link(path)), _) => cwd.join(path),
+            (None, Some(path)) => path,
+            _ => hoisted_placements
+                .as_ref()
+                .and_then(|placements| placements.package_dir(dep_path))
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| {
+                    virtual_store_pkg_dir(
+                        &aube_dir,
+                        dep_path,
+                        &pkg.name,
+                        virtual_store_dir_max_length,
+                    )
+                }),
+        };
+        let recorded_license = installed_licenses.licenses.get(dep_path).cloned();
+        metadata.insert(
+            dep_path.to_string(),
+            InstalledPackageMetadata {
+                license: if linked {
+                    read_license(&path).or(recorded_license)
+                } else {
+                    recorded_license.or_else(|| read_license(&path))
+                }
+                .or_else(|| pkg.license.clone()),
+                path,
+            },
+        );
     }
+    Ok(metadata)
+}
 
-    Ok(())
+pub(super) fn collect_installed_licenses<'a>(
+    cwd: &Path,
+    graph: &LockfileGraph,
+    dep_paths: impl IntoIterator<Item = &'a str>,
+) -> miette::Result<BTreeMap<String, InstalledPackageMetadata>> {
+    let installed = crate::state::read_state_package_licenses(cwd);
+    let mut metadata = BTreeMap::new();
+    let mut fallback_paths = Vec::new();
+    for dep_path in dep_paths {
+        let Some(pkg) = graph.get_package(dep_path) else {
+            continue;
+        };
+        let cached = installed.licenses.get(dep_path).cloned();
+        let license = if let Some(path) = installed.linked_package_dirs.get(dep_path) {
+            read_license(&cwd.join(path)).or(cached)
+        } else if cached.is_some() {
+            cached
+        } else {
+            fallback_paths.push(dep_path);
+            continue;
+        }
+        .or_else(|| pkg.license.clone());
+        metadata.insert(
+            dep_path.to_string(),
+            InstalledPackageMetadata {
+                license,
+                path: PathBuf::new(),
+            },
+        );
+    }
+    if !fallback_paths.is_empty() {
+        metadata.extend(collect_installed_metadata(cwd, graph, fallback_paths)?);
+    }
+    Ok(metadata)
 }
 
 /// Infer `modulesDir` from the root importer's recorded direct entries in
@@ -223,14 +328,12 @@ fn legacy_hoisted_placements(
     ))
 }
 
-/// Walk every package in the filtered graph and read its installed manifest,
-/// using hoisted placements when applicable. Packages whose manifest can't be
-/// read (e.g., `node_modules` not materialized yet) fall back to "UNKNOWN" so
-/// one missing file doesn't sink the whole report.
+/// Walk every package in the filtered graph and render its collected metadata.
+/// Packages whose manifest couldn't be read fall back to "UNKNOWN" so one
+/// missing file doesn't sink the whole report.
 fn collect_rows(
-    aube_dir: &Path,
     graph: &LockfileGraph,
-    hoisted_placements: Option<&aube_linker::HoistedPlacements>,
+    installed_metadata: &BTreeMap<String, InstalledPackageMetadata>,
     long: bool,
 ) -> Vec<Row> {
     // Deduplicate by (name, version) so peer-context duplicates
@@ -242,17 +345,15 @@ fn collect_rows(
         if !seen.insert((pkg.name.clone(), pkg.version.clone())) {
             continue;
         }
-        let pkg_dir = hoisted_placements
-            .and_then(|placements| placements.package_dir(&pkg.dep_path))
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| virtual_store_pkg_dir(aube_dir, &pkg.dep_path, &pkg.name));
-        let license = read_license(&pkg_dir);
+        let metadata = installed_metadata.get(&pkg.dep_path);
         rows.push(Row {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
-            license: license.unwrap_or_else(|| "UNKNOWN".to_string()),
+            license: metadata
+                .and_then(|metadata| metadata.license.clone())
+                .unwrap_or_else(|| "UNKNOWN".to_string()),
             path: if long {
-                Some(pkg_dir.display().to_string())
+                metadata.map(|metadata| metadata.path.display().to_string())
             } else {
                 None
             },
@@ -281,15 +382,15 @@ fn collect_rows(
 /// `aube_dir` is the resolved `virtualStoreDir` — the caller threads
 /// it in via `commands::resolve_virtual_store_dir_for_cwd` so a
 /// custom override lands on the same path the linker wrote to.
-fn virtual_store_pkg_dir(aube_dir: &Path, dep_path: &str, name: &str) -> PathBuf {
-    use aube_lockfile::dep_path_filename::{
-        DEFAULT_VIRTUAL_STORE_DIR_MAX_LENGTH, dep_path_to_filename,
-    };
+fn virtual_store_pkg_dir(
+    aube_dir: &Path,
+    dep_path: &str,
+    name: &str,
+    virtual_store_dir_max_length: usize,
+) -> PathBuf {
+    use aube_lockfile::dep_path_filename::dep_path_to_filename;
     aube_dir
-        .join(dep_path_to_filename(
-            dep_path,
-            DEFAULT_VIRTUAL_STORE_DIR_MAX_LENGTH,
-        ))
+        .join(dep_path_to_filename(dep_path, virtual_store_dir_max_length))
         .join("node_modules")
         .join(name)
 }
@@ -299,18 +400,31 @@ fn virtual_store_pkg_dir(aube_dir: &Path, dep_path: &str, name: &str) -> PathBuf
 /// Accepts every shape real packages use in the wild:
 /// - `"license": "MIT"` — SPDX string
 /// - `"license": { "type": "MIT" }` — legacy object form still found on npm
-/// - `"licenses": [ { "type": "MIT" }, ... ]` — legacy array, pick the first
+/// - `"licenses": [ { "type": "MIT" }, ... ]` — legacy array
 ///
 /// Returns `None` when the manifest is unreadable or the field is missing.
-fn read_license(pkg_dir: &Path) -> Option<String> {
+pub(crate) fn read_license(pkg_dir: &Path) -> Option<String> {
     let bytes = std::fs::read(pkg_dir.join("package.json")).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    value.get("license").and_then(extract_license).or_else(|| {
-        value
-            .get("licenses")
+    let manifest: ManifestLicenseFields = serde_json::from_slice(&bytes).ok()?;
+    license_from_values(manifest.license.as_ref(), manifest.licenses.as_ref())
+}
+
+#[derive(Deserialize)]
+struct ManifestLicenseFields {
+    license: Option<serde_json::Value>,
+    licenses: Option<serde_json::Value>,
+}
+
+pub(super) fn license_from_values(
+    license: Option<&serde_json::Value>,
+    licenses: Option<&serde_json::Value>,
+) -> Option<String> {
+    license.and_then(extract_license).or_else(|| {
+        licenses
             .and_then(|v| v.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(extract_license)
+            .map(|arr| arr.iter().filter_map(extract_license).collect::<Vec<_>>())
+            .filter(|licenses| !licenses.is_empty())
+            .map(|licenses| licenses.join(" OR "))
     })
 }
 
@@ -389,5 +503,46 @@ mod tests {
     fn extract_license_missing_type() {
         let v = serde_json::json!({ "url": "..." });
         assert!(extract_license(&v).is_none());
+    }
+
+    #[test]
+    fn manifest_license_fields_skip_unrelated_manifest_data() {
+        let manifest: ManifestLicenseFields = serde_json::from_value(serde_json::json!({
+            "name": "example",
+            "dependencies": {"dep": "1.0.0"},
+            "scripts": {"postinstall": "node build.js"},
+            "license": {"type": "Apache-2.0", "url": "https://example.com/license"}
+        }))
+        .unwrap();
+        assert_eq!(
+            license_from_values(manifest.license.as_ref(), manifest.licenses.as_ref()),
+            Some("Apache-2.0".to_string())
+        );
+    }
+
+    #[test]
+    fn manifest_license_fields_keep_valid_primary_when_legacy_field_is_malformed() {
+        let manifest: ManifestLicenseFields = serde_json::from_value(serde_json::json!({
+            "license": "MIT",
+            "licenses": "not-an-array"
+        }))
+        .unwrap();
+        assert_eq!(
+            license_from_values(manifest.license.as_ref(), manifest.licenses.as_ref()),
+            Some("MIT".to_string())
+        );
+    }
+
+    #[test]
+    fn legacy_license_array_preserves_every_license() {
+        let value = serde_json::json!([
+            {"type": "MIT"},
+            {"type": "Apache-2.0"},
+            {"url": "ignored"}
+        ]);
+        assert_eq!(
+            license_from_values(None, Some(&value)),
+            Some("MIT OR Apache-2.0".to_string())
+        );
     }
 }
