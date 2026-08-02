@@ -135,6 +135,12 @@ pub async fn run(
         ));
     }
     let source_root = crate::dirs::cwd().wrap_err("failed to read current directory")?;
+    // A deploy install runs from the standalone target, so workspace-root
+    // patch declarations and files would otherwise disappear when staging
+    // copies only the selected package. Read declaration metadata now, but
+    // defer path validation and content loading until after importer filtering:
+    // an unrelated broken patch must not block this deployment.
+    let patch_paths = crate::patches::load_declared_patch_paths(&source_root)?;
 
     // Resolve `deployAllFiles` from the source workspace root, before
     // we chdir into any per-match target. `.npmrc` and
@@ -249,17 +255,35 @@ pub async fn run(
         v
     };
 
+    // Filter and resolve every target's patches before creating any target.
+    // This preserves atomic failure for missing relevant patches across a
+    // multi-package fanout without validating unrelated workspace entries.
+    let resolved_patches: Vec<BTreeMap<String, crate::patches::ResolvedPatch>> = plan
+        .iter()
+        .map(|(_, source_pkg_dir, _)| {
+            let selected = patch_paths_for_importer(
+                &source_root,
+                source_pkg_dir,
+                &patch_paths,
+                keep_dep_for_args(&args),
+            )?;
+            crate::patches::resolve_declared_patches(&source_root, selected)
+        })
+        .collect::<miette::Result<_>>()?;
+
     // Stage every target (copy + manifest rewrite) up front. Running
     // staging for all matches before any install means a multi-package
     // fanout can't half-install one package and then fail on a copy
     // error in the next.
     let mut staged: Vec<StagedDeploy> = Vec::with_capacity(plan.len());
-    for (_name, source_pkg_dir, target) in &plan {
+    for ((_name, source_pkg_dir, target), patches) in plan.iter().zip(&resolved_patches) {
+        let target_patches: Vec<&crate::patches::ResolvedPatch> = patches.values().collect();
         staged.push(stage_one(
             source_pkg_dir,
             target,
             &ws_index,
             &catalogs,
+            &target_patches,
             &args,
             deploy_all_files,
         )?);
@@ -369,6 +393,52 @@ pub(super) fn canonicalize(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
+/// Select patches whose package occurs in the deployed importer's retained
+/// lockfile closure. This prevents a patch for an unrelated workspace package
+/// from colliding with a publishable file in the selected package.
+///
+/// A missing, stale, or foreign lockfile still needs the conservative fallback:
+/// fresh resolution may discover a patched transitive dependency that cannot be
+/// inferred from manifests alone.
+fn patch_paths_for_importer(
+    source_root: &Path,
+    source_pkg_dir: &Path,
+    patches: &BTreeMap<String, String>,
+    keep_dep: impl Fn(&aube_lockfile::DirectDep) -> bool,
+) -> miette::Result<BTreeMap<String, String>> {
+    let all = || patches.clone();
+    let Ok(source_manifest) = PackageJson::from_path(&source_root.join("package.json")) else {
+        return Ok(all());
+    };
+    let Ok((graph, _)) = aube_lockfile::parse_lockfile_with_kind(source_root, &source_manifest)
+    else {
+        return Ok(all());
+    };
+    let importer_path = super::workspace_importer_path(source_root, source_pkg_dir)?;
+    let Some(subset) = graph.subset_to_importer(&importer_path, keep_dep) else {
+        return Ok(all());
+    };
+    let relevant = package_patch_keys(&subset);
+    Ok(patches
+        .iter()
+        .filter(|(key, _)| relevant.contains(*key))
+        .map(|(key, path)| (key.clone(), path.clone()))
+        .collect())
+}
+
+fn package_patch_keys(graph: &aube_lockfile::LockfileGraph) -> std::collections::HashSet<String> {
+    graph
+        .packages
+        .values()
+        .flat_map(|pkg| {
+            [
+                pkg.spec_key(),
+                format!("{}@{}", pkg.registry_name(), pkg.version),
+            ]
+        })
+        .collect()
+}
+
 /// Attempt to seed `target` with a subset of the source workspace's
 /// lockfile, pruned to the deployed package's transitive closure.
 /// Returns `true` iff a lockfile was written; `false` means we fell
@@ -465,6 +535,10 @@ fn seed_target_lockfile(
     subset.overrides.clear();
     subset.ignored_optional_dependencies.clear();
     subset.catalogs.clear();
+    let relevant_patch_keys = package_patch_keys(&subset);
+    subset
+        .patched_dependencies
+        .retain(|key, _| relevant_patch_keys.contains(key));
 
     // Prune `times` to match the subset's `packages`. `times` isn't
     // part of drift detection, so keeping the source workspace's
