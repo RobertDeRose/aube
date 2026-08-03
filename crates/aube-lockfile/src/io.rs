@@ -774,6 +774,20 @@ pub enum Error {
     #[error("unsupported lockfile format: {0}")]
     #[diagnostic(code(ERR_AUBE_LOCKFILE_UNSUPPORTED_FORMAT))]
     UnsupportedFormat(String),
+    #[error(
+        "lockfile {path} contains named-registry package `{dep_path}` from `{registry_name}:`, which aube does not support yet"
+    )]
+    #[diagnostic(
+        code(ERR_AUBE_UNSUPPORTED_NAMED_REGISTRY),
+        help(
+            "aube cannot install this lockfile yet; use pnpm 11.20 or newer instead for this project"
+        )
+    )]
+    UnsupportedNamedRegistry {
+        path: std::path::PathBuf,
+        dep_path: String,
+        registry_name: String,
+    },
     #[error("failed to read lockfile {0}: {1}")]
     Io(std::path::PathBuf, std::io::Error),
     /// Structural/serialization lockfile errors that have no source
