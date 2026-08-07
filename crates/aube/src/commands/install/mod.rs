@@ -33,7 +33,7 @@ mod unreviewed_builds;
 mod workspace;
 
 use advisory::resolve_osv_routing_settings;
-pub use args::{InstallArgs, InstallOptions};
+pub use args::{EmbedderInstallOverrides, InstallArgs, InstallOptions};
 pub(crate) use bin_linking::{PkgJsonCache, link_dep_bins, materialized_pkg_dir};
 pub use control::{
     InstallControl, InstallEvent, InstallOutputLevel, InstallOutputMode, InstallPhase,
@@ -272,6 +272,7 @@ fn apply_computed_integrities(
 
 async fn validate_lockfile_trust_policy(
     cwd: &std::path::Path,
+    settings_ctx: &aube_settings::ResolveCtx<'_>,
     graph: &aube_lockfile::LockfileGraph,
     network_mode: aube_registry::NetworkMode,
     policy: &aube_resolver::DependencyPolicy,
@@ -280,13 +281,14 @@ async fn validate_lockfile_trust_policy(
     else {
         return Ok(());
     };
-    if trust_policy_validation_cache_hit(cwd, &cache_key) {
+    let cache_dir = super::resolved_cache_dir_with_ctx(cwd, settings_ctx);
+    if trust_policy_validation_cache_hit(&cache_dir, &cache_key) {
         tracing::debug!("trustPolicy=no-downgrade: reused lockfile validation cache");
         return Ok(());
     }
 
     let client = std::sync::Arc::new(make_client(cwd).with_network_mode(network_mode));
-    let full_cache_dir = super::packument_full_cache_dir();
+    let full_cache_dir = cache_dir.join("packuments-full-v1");
     let concurrency = default_lockfile_network_concurrency().max(1);
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
     let mut seen = std::collections::BTreeSet::new();
@@ -342,7 +344,7 @@ async fn validate_lockfile_trust_policy(
         result.map_err(miette::Report::new)?;
     }
 
-    record_lockfile_trust_policy_validation(cwd, &cache_key);
+    record_lockfile_trust_policy_validation(&cache_dir, &cache_key);
     Ok(())
 }
 
@@ -411,14 +413,17 @@ fn trust_policy_validation_cache_key(
     Some(hasher.finalize().to_hex().to_string())
 }
 
-fn trust_policy_validation_cache_path(cwd: &std::path::Path, key: &str) -> std::path::PathBuf {
-    super::resolved_cache_dir(cwd)
+fn trust_policy_validation_cache_path(
+    cache_dir: &std::path::Path,
+    key: &str,
+) -> std::path::PathBuf {
+    cache_dir
         .join(TRUST_POLICY_VALIDATION_CACHE_DIR)
         .join(format!("{key}.json"))
 }
 
-fn trust_policy_validation_cache_hit(cwd: &std::path::Path, key: &str) -> bool {
-    let path = trust_policy_validation_cache_path(cwd, key);
+fn trust_policy_validation_cache_hit(cache_dir: &std::path::Path, key: &str) -> bool {
+    let path = trust_policy_validation_cache_path(cache_dir, key);
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
@@ -437,7 +442,7 @@ fn trust_policy_validation_cache_hit(cwd: &std::path::Path, key: &str) -> bool {
     age_secs <= TRUST_POLICY_VALIDATION_CACHE_TTL.as_secs()
 }
 
-fn record_lockfile_trust_policy_validation(cwd: &std::path::Path, cache_key: &str) {
+fn record_lockfile_trust_policy_validation(cache_dir: &std::path::Path, cache_key: &str) {
     let Some(validated_at_secs) = unix_time_secs() else {
         return;
     };
@@ -448,7 +453,7 @@ fn record_lockfile_trust_policy_validation(cwd: &std::path::Path, cache_key: &st
     let Ok(bytes) = serde_json::to_vec(&stamp) else {
         return;
     };
-    let path = trust_policy_validation_cache_path(cwd, cache_key);
+    let path = trust_policy_validation_cache_path(cache_dir, cache_key);
     if let Err(e) = aube_util::fs_atomic::atomic_write(&path, &bytes) {
         tracing::debug!("failed to write trust-policy validation cache: {e}");
     }
@@ -456,12 +461,14 @@ fn record_lockfile_trust_policy_validation(cwd: &std::path::Path, cache_key: &st
 
 fn maybe_record_lockfile_trust_policy_validation(
     cwd: &std::path::Path,
+    settings_ctx: &aube_settings::ResolveCtx<'_>,
     graph: &aube_lockfile::LockfileGraph,
     network_mode: aube_registry::NetworkMode,
     policy: &aube_resolver::DependencyPolicy,
 ) {
     if let Some(cache_key) = trust_policy_validation_cache_key(cwd, graph, network_mode, policy) {
-        record_lockfile_trust_policy_validation(cwd, &cache_key);
+        let cache_dir = super::resolved_cache_dir_with_ctx(cwd, settings_ctx);
+        record_lockfile_trust_policy_validation(&cache_dir, &cache_key);
     }
 }
 
@@ -592,6 +599,9 @@ async fn run_inner(opts: InstallOptions, cwd: std::path::PathBuf) -> miette::Res
     // order.
     let workspace_catalogs = super::discover_catalogs(&cwd)?;
     let settings_ctx = files.ctx(&raw_workspace, &opts.env_snapshot, &opts.cli_flags);
+    let packument_cache_dir =
+        super::resolved_cache_dir_with_ctx(&cwd, &settings_ctx).join("packuments-v1");
+    let explicit_store_dir_override = has_explicit_store_dir_override(&opts.cli_flags);
     let dependency_policy = resolve_dependency_policy(&manifest, &settings_ctx);
     // Resolve the project's Node runtime before anything can spawn
     // node: the root `preinstall` hooks below must already run on the
@@ -930,11 +940,17 @@ async fn run_inner(opts: InstallOptions, cwd: std::path::PathBuf) -> miette::Res
 
     let planned_gvs =
         gvs::planned_global_virtual_store(use_global_virtual_store_override, &opts.env_snapshot);
-    gvs::reset_on_mode_change(&cwd, &aube_dir, &modules_dir_name, planned_gvs)?;
+    gvs::reset_on_mode_change(
+        &cwd,
+        &aube_dir,
+        &modules_dir_name,
+        planned_gvs,
+        &settings_ctx,
+    )?;
 
     // 3. Parse or resolve lockfile, streaming tarball fetches during resolution
     let phase_start = std::time::Instant::now();
-    let store = std::sync::Arc::new(super::open_store(&cwd)?);
+    let store = std::sync::Arc::new(super::open_store_with_ctx(&cwd, &settings_ctx)?);
     // Pre-create all 256 two-char shard directories in the CAS root.
     // `import_bytes` is called once per stored file (~7.5k for a medium
     // install) and previously did `mkdirp(parent)` per call — a stat
@@ -1072,8 +1088,14 @@ async fn run_inner(opts: InstallOptions, cwd: std::path::PathBuf) -> miette::Res
                 &ws_config_shared,
                 &settings_ctx,
             )?;
-            validate_lockfile_trust_policy(&cwd, &graph, opts.network_mode, &dependency_policy)
-                .await?;
+            validate_lockfile_trust_policy(
+                &cwd,
+                &settings_ctx,
+                &graph,
+                opts.network_mode,
+                &dependency_policy,
+            )
+            .await?;
             control::check_cancelled()?;
             let source_label = resolve::lockfile_source_label(kind);
             tracing::debug!(
@@ -1175,8 +1197,10 @@ async fn run_inner(opts: InstallOptions, cwd: std::path::PathBuf) -> miette::Res
                 prog_ref,
                 &cwd,
                 &aube_dir,
+                &packument_cache_dir,
                 Some(lock_materialize_tx),
-                /*skip_already_linked_shortcut=*/ has_workspace,
+                /*skip_already_linked_shortcut=*/
+                has_workspace || explicit_store_dir_override,
                 &lock_project_local_dep_paths,
                 virtual_store_dir_max_length,
                 opts.ignore_scripts,
@@ -2219,8 +2243,10 @@ async fn run_inner(opts: InstallOptions, cwd: std::path::PathBuf) -> miette::Res
                         prog_ref,
                         &cwd,
                         &aube_dir,
+                        &packument_cache_dir,
                         /*materialize_tx=*/ None,
-                        /*skip_already_linked_shortcut=*/ has_workspace,
+                        /*skip_already_linked_shortcut=*/
+                        has_workspace || explicit_store_dir_override,
                         &project_local_dep_paths,
                         virtual_store_dir_max_length,
                         opts.ignore_scripts,
@@ -2501,12 +2527,18 @@ async fn run_inner(opts: InstallOptions, cwd: std::path::PathBuf) -> miette::Res
     ) {
         maybe_record_lockfile_trust_policy_validation(
             &cwd,
+            &settings_ctx,
             &graph,
             opts.network_mode,
             &dependency_policy,
         );
     }
     Ok(())
+}
+
+fn has_explicit_store_dir_override(cli_flags: &[(String, String)]) -> bool {
+    super::has_embedder_store_override()
+        || aube_settings::values::string_from_cli("storeDir", cli_flags).is_some()
 }
 
 /// Run pnpm's root-only pre-resolution hook from the workspace/lockfile root.
@@ -2749,5 +2781,26 @@ mod computed_integrity_tests {
             graph.packages["already@1.0.0"].integrity.as_deref(),
             Some("sha512-existing")
         );
+    }
+}
+
+#[cfg(test)]
+mod explicit_store_dir_override_tests {
+    use super::has_explicit_store_dir_override;
+
+    #[test]
+    fn recognizes_canonical_and_kebab_case_cli_keys() {
+        assert!(has_explicit_store_dir_override(&[(
+            "storeDir".into(),
+            "/store".into(),
+        )]));
+        assert!(has_explicit_store_dir_override(&[(
+            "store-dir".into(),
+            "/store".into(),
+        )]));
+        assert!(!has_explicit_store_dir_override(&[(
+            "cache-dir".into(),
+            "/cache".into(),
+        )]));
     }
 }
