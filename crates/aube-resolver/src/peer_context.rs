@@ -98,12 +98,14 @@ pub fn detect_unmet_peers(graph: &LockfileGraph) -> Vec<UnmetPeer> {
 /// Promote direct dependencies' unmet peers to importer direct deps.
 ///
 /// Walks each importer's direct dependencies and hoists any peer they
-/// declare that isn't already a direct dep of the importer up to the
-/// importer's `dependencies` list — what pnpm's
-/// `auto-install-peers=true` produces in its v9 lockfile. Peers declared by
-/// transitive dependencies stay in the resolved graph for peer-context
-/// sibling wiring, but they are not surfaced as top-level
-/// `node_modules/<peer>` entries.
+/// declare that isn't already a direct dep of the importer into a synthetic
+/// importer entry. Aube uses that entry to create the top-level
+/// `node_modules/<peer>` symlink required by its isolated linker. The
+/// synthetic entry inherits the requiring package's dependency kind so
+/// section-filtered installs retain it only when they retain the package
+/// that needs it. Peers declared by transitive dependencies stay in the
+/// resolved graph for peer-context sibling wiring, but they are not surfaced
+/// as top-level entries.
 ///
 /// Public so lockfile-driven installs that need to re-derive peer
 /// wiring (npm/yarn/bun formats, which don't record peer contexts)
@@ -118,8 +120,9 @@ pub fn detect_unmet_peers(graph: &LockfileGraph) -> Vec<UnmetPeer> {
 ///   2. Visit only those direct dependency packages and examine their
 ///      `peer_dependencies` declarations. For each declared peer not
 ///      already satisfied by the importer, find a resolved version somewhere
-///      in the graph and synthesize a `DirectDep` entry. Mark it as
-///      satisfied so a second direct dep doesn't add a duplicate.
+///      in the graph and synthesize one `DirectDep` entry. If another direct
+///      dependency needs the same peer, promote the synthetic entry to the
+///      strongest section classification required by either package.
 ///   3. Stable: we walk in-order and take the first declared peer range
 ///      encountered per name as the specifier. Conflicting ranges across
 ///      the tree are not reconciled — first one wins. This matches pnpm
@@ -133,20 +136,36 @@ pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
         let Some(direct_deps) = graph.importers.get(&importer_path) else {
             continue;
         };
-        let mut satisfied: FxHashSet<String> = direct_deps.iter().map(|d| d.name.clone()).collect();
+        let satisfied: FxHashSet<String> = direct_deps.iter().map(|d| d.name.clone()).collect();
 
         // Additions are gathered into a separate vec so we don't mutate
         // the importer's direct-dep list while still borrowing from it.
         let mut additions: Vec<DirectDep> = Vec::new();
+        let mut additions_by_name: FxHashMap<String, usize> =
+            FxHashMap::with_capacity_and_hasher(direct_deps.len(), Default::default());
 
-        for dep_path in direct_deps.iter().map(|d| &d.dep_path) {
-            let Some(pkg) = graph.packages.get(dep_path) else {
+        for direct_dep in direct_deps {
+            let Some(pkg) = graph.packages.get(&direct_dep.dep_path) else {
                 continue;
             };
 
             // Collect unmet peer declarations from this package.
             for (peer_name, peer_range) in &pkg.peer_dependencies {
                 if satisfied.contains(peer_name) {
+                    continue;
+                }
+                if let Some(&idx) = additions_by_name.get(peer_name) {
+                    let current = additions[idx].dep_type;
+                    // A peer needed by roots from different sections cannot
+                    // safely inherit either narrower classification: the
+                    // other section's filter could then drop it while keeping
+                    // a requirer. Normalize mixed classifications to
+                    // Production, which survives both --production and
+                    // --no-optional. Matching classifications stay unchanged.
+                    additions[idx].dep_type = match (current, direct_dep.dep_type) {
+                        (left, right) if left == right => left,
+                        _ => DepType::Production,
+                    };
                     continue;
                 }
                 // Find any resolved version in the graph for this peer.
@@ -192,13 +211,11 @@ pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
                     // rather than writing a dangling DirectDep.
                     continue;
                 }
-                satisfied.insert(peer_name.clone());
+                additions_by_name.insert(peer_name.clone(), additions.len());
                 additions.push(DirectDep {
                     name: peer_name.clone(),
                     dep_path: synth_dep_path,
-                    // Peers auto-hoisted to the root are in the prod
-                    // graph by convention — matches what pnpm writes.
-                    dep_type: DepType::Production,
+                    dep_type: direct_dep.dep_type,
                     specifier: Some(peer_range.clone()),
                 });
             }

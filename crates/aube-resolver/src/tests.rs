@@ -2589,9 +2589,9 @@ fn contains_canonical_back_ref_respects_boundaries() {
 }
 
 // A package whose only dep is another package that declares a peer
-// should hoist that peer to the importer — matching pnpm's
-// `auto-install-peers=true` default. The hoisted DirectDep carries
-// the declared peer range as its specifier.
+// should hoist that peer to the importer. The hoisted DirectDep carries
+// the declared peer range as its specifier and inherits the requiring
+// direct dependency's section classification.
 #[test]
 fn hoist_auto_installed_peers_hoists_unmet_peers_to_importer() {
     // consumer declares `peer react: ^17 || ^18` and already has
@@ -2637,6 +2637,106 @@ fn hoist_auto_installed_peers_hoists_unmet_peers_to_importer() {
     assert_eq!(root[1].dep_type, DepType::Production);
     // Specifier carries the declared peer range verbatim.
     assert_eq!(root[1].specifier.as_deref(), Some("^17 || ^18"));
+}
+
+#[test]
+fn hoist_auto_installed_peers_preserves_requirer_dep_type() {
+    for dep_type in [DepType::Production, DepType::Dev, DepType::Optional] {
+        let mut consumer = mk_locked(
+            "consumer",
+            "1.0.0",
+            &[("react", "18.2.0")],
+            &[("react", "^18")],
+        );
+        consumer.dep_path = "consumer@1.0.0".to_string();
+
+        let mut packages = BTreeMap::new();
+        packages.insert("consumer@1.0.0".to_string(), consumer);
+        packages.insert(
+            "react@18.2.0".to_string(),
+            mk_locked("react", "18.2.0", &[], &[]),
+        );
+
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "consumer".to_string(),
+                dep_path: "consumer@1.0.0".to_string(),
+                dep_type,
+                specifier: Some("^1".to_string()),
+            }],
+        );
+
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+        let hoisted = hoist_auto_installed_peers(graph);
+        let root = hoisted.importers.get(".").unwrap();
+        let react = root.iter().find(|dep| dep.name == "react").unwrap();
+        assert_eq!(react.dep_type, dep_type);
+    }
+}
+
+#[test]
+fn hoist_auto_installed_peers_promotes_shared_peer_dep_type() {
+    for (first_type, second_type, expected) in [
+        (DepType::Dev, DepType::Optional, DepType::Production),
+        (DepType::Dev, DepType::Production, DepType::Production),
+        (DepType::Optional, DepType::Production, DepType::Production),
+    ] {
+        let first = mk_locked(
+            "first",
+            "1.0.0",
+            &[("react", "18.2.0")],
+            &[("react", "^18")],
+        );
+        let second = mk_locked(
+            "second",
+            "1.0.0",
+            &[("react", "18.2.0")],
+            &[("react", "^18")],
+        );
+
+        let mut packages = BTreeMap::new();
+        packages.insert("first@1.0.0".to_string(), first);
+        packages.insert("second@1.0.0".to_string(), second);
+        packages.insert(
+            "react@18.2.0".to_string(),
+            mk_locked("react", "18.2.0", &[], &[]),
+        );
+
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![
+                DirectDep {
+                    name: "first".to_string(),
+                    dep_path: "first@1.0.0".to_string(),
+                    dep_type: first_type,
+                    specifier: Some("^1".to_string()),
+                },
+                DirectDep {
+                    name: "second".to_string(),
+                    dep_path: "second@1.0.0".to_string(),
+                    dep_type: second_type,
+                    specifier: Some("^1".to_string()),
+                },
+            ],
+        );
+
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+        let hoisted = hoist_auto_installed_peers(graph);
+        let root = hoisted.importers.get(".").unwrap();
+        let react = root.iter().find(|dep| dep.name == "react").unwrap();
+        assert_eq!(react.dep_type, expected);
+    }
 }
 
 // Peers declared by transitive dependencies are still resolved and
