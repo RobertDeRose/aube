@@ -12350,9 +12350,9 @@
           {
             "name": "latest",
             "usage": "-L --latest",
-            "help": "Update past the manifest range",
-            "help_long": "Update past the manifest range.\n\nRewrites `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual).",
-            "help_first_line": "Update past the manifest range",
+            "help": "Update past the manifest range unless paired with `--no-save`",
+            "help_long": "Update past the manifest range unless paired with `--no-save`.\n\nRewrites `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual). With `--no-save`, leaves the manifest range unchanged and resolves only to the newest version that range allows.",
+            "help_first_line": "Update past the manifest range unless paired with `--no-save`",
             "short": [
               "L"
             ],
@@ -12485,7 +12485,7 @@
             "name": "no-save",
             "usage": "--no-save",
             "help": "Refresh the lockfile without rewriting `package.json` ranges",
-            "help_long": "Refresh the lockfile without rewriting `package.json` ranges.\n\nPair with `--latest` to pull a newer resolved version into the lockfile while leaving the manifest's caret/tilde ranges untouched. Without `--latest` this flag is a no-op (plain `update` already doesn't touch the manifest). Mirrors `pnpm update --no-save`.",
+            "help_long": "Refresh the lockfile without rewriting `package.json` ranges.\n\nPair with `--latest` to refresh the lockfile to the newest version allowed by the unchanged manifest range. Without `--latest`, it still suppresses manifest range rewrites enabled by `updateRewritesSpecifier`. Mirrors `pnpm update --no-save`.",
             "help_first_line": "Refresh the lockfile without rewriting `package.json` ranges",
             "short": [],
             "long": [

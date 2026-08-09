@@ -38,9 +38,9 @@ Parsed for pnpm compatibility.
 
 ### `-L --latest`
 
-Update past the manifest range.
+Update past the manifest range unless paired with `--no-save`.
 
-Rewrites `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual).
+Rewrites `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual). With `--no-save`, leaves the manifest range unchanged and resolves only to the newest version that range allows.
 
 ### `-P --prod`
 
@@ -80,7 +80,7 @@ Skip optionalDependencies
 
 Refresh the lockfile without rewriting `package.json` ranges.
 
-Pair with `--latest` to pull a newer resolved version into the lockfile while leaving the manifest's caret/tilde ranges untouched. Without `--latest` this flag is a no-op (plain `update` already doesn't touch the manifest). Mirrors `pnpm update --no-save`.
+Pair with `--latest` to refresh the lockfile to the newest version allowed by the unchanged manifest range. Without `--latest`, it still suppresses manifest range rewrites enabled by `updateRewritesSpecifier`. Mirrors `pnpm update --no-save`.
 
 ### `--pnpmfile <PATH>`
 
