@@ -17,6 +17,7 @@ use super::{CatalogMap, config, install};
 static GLOBAL_FROZEN: OnceLock<Option<install::FrozenOverride>> = OnceLock::new();
 static GLOBAL_VIRTUAL_STORE: OnceLock<install::GlobalVirtualStoreFlags> = OnceLock::new();
 static SKIP_AUTO_INSTALL_ON_PM_MISMATCH: AtomicBool = AtomicBool::new(false);
+pub(crate) const GVS_REGISTRY_NAMESPACE_VERSION: &str = "v1";
 
 /// Process-wide registry override from the top-level `--registry=<url>`
 /// flag. Applied in `make_client` (and any direct `NpmConfig::load`
@@ -551,9 +552,11 @@ pub(crate) fn resolved_cache_dir_with_ctx(
 /// materialized packages that project `node_modules/.aube/<dep_path>`
 /// entries symlink into.
 ///
-/// `globalVirtualStoreDir` wins when set and is used verbatim (no
-/// `virtual-store` suffix); otherwise the store lands under the
-/// resolved [`resolved_cache_dir`]. The dedicated setting exists
+/// `globalVirtualStoreDir` wins when set and is used as the store root (no
+/// `virtual-store` suffix); otherwise the root lands under the resolved
+/// [`resolved_cache_dir`]. Registry-aware entries live in a versioned child
+/// directory so older aube releases cannot create or reuse entries that the
+/// current project registry may later prune. The dedicated setting exists
 /// because this tree — unlike the rest of the cache — has to sit on
 /// the same volume as `storeDir` to be hardlinkable, which is not
 /// necessarily where the packument caches belong.
@@ -570,11 +573,12 @@ pub(crate) fn global_virtual_store_dir_with_ctx(
     cwd: &std::path::Path,
     ctx: &aube_settings::ResolveCtx<'_>,
 ) -> std::path::PathBuf {
-    aube_settings::resolved::global_virtual_store_dir(ctx)
+    let root = aube_settings::resolved::global_virtual_store_dir(ctx)
         .and_then(|raw| expand_setting_path(&raw, cwd))
         .unwrap_or_else(|| {
             resolved_cache_dir_with_ctx(cwd, ctx).join(aube_store::VIRTUAL_STORE_SUBDIR)
-        })
+        });
+    root.join(GVS_REGISTRY_NAMESPACE_VERSION)
 }
 
 /// Resolve the `virtualStoreDirMaxLength` setting, falling back to the

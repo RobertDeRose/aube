@@ -3,6 +3,7 @@
 setup() {
 	load 'test_helper/common_setup'
 	_common_setup
+	export AUBE_GLOBAL_VIRTUAL_STORE_DIR="$TEST_TEMP_DIR/global-virtual-store"
 }
 
 teardown() {
@@ -193,6 +194,65 @@ EOF
 	assert_success
 	assert_output --partial "Pruned"
 	refute_output --partial "Pruned 0 files"
+}
+
+@test "aube store prune removes entries from deleted registered projects" {
+	mkdir project
+	cat >project/package.json <<'JSON'
+{
+  "name": "gvs-prune-project",
+  "version": "1.0.0",
+  "dependencies": { "is-odd": "3.0.1" }
+}
+JSON
+	run bash -c 'cd project && aube install'
+	assert_success
+
+	gvs="$AUBE_GLOBAL_VIRTUAL_STORE_DIR/v1"
+	legacy="$AUBE_GLOBAL_VIRTUAL_STORE_DIR/legacy@1.0.0-deadbeefdeadbeef"
+	mkdir -p "$legacy"
+	assert_dir_exists "$gvs"
+	assert [ -n "$(find "$gvs" -mindepth 1 -maxdepth 1 -type d ! -name node_modules ! -name '.*' -print -quit)" ]
+	# A warm install must restore missing registration without forcing the
+	# linker to run again.
+	rm -rf "$gvs/.projects"
+	run bash -c 'cd project && aube install'
+	assert_success
+	assert_output --partial "Already up to date"
+	assert_dir_exists "$gvs/.projects"
+	rm -rf project
+
+	run aube store prune --dry-run
+	assert_success
+	assert_output --partial "Would prune"
+	assert_output --partial "from the global virtual store"
+	assert [ -n "$(find "$gvs" -mindepth 1 -maxdepth 1 -type d ! -name node_modules ! -name '.*' -print -quit)" ]
+
+	run aube store prune
+	assert_success
+	assert_output --partial "from the global virtual store"
+	assert [ -z "$(find "$gvs" -mindepth 1 -maxdepth 1 -type d ! -name node_modules ! -name '.*' -print -quit)" ]
+	assert [ -z "$(find "$gvs/.projects" -mindepth 1 -maxdepth 1 -type f -print -quit)" ]
+	assert_dir_exists "$legacy"
+}
+
+@test "GVS registration failure does not report install success" {
+	mkdir project
+	cat >project/package.json <<'JSON'
+{
+  "name": "gvs-registration-failure",
+  "version": "1.0.0",
+  "dependencies": { "is-odd": "3.0.1" }
+}
+JSON
+	run bash -c 'cd project && aube install'
+	assert_success
+
+	chmod a-w "$AUBE_GLOBAL_VIRTUAL_STORE_DIR/v1/.projects"
+	run bash -c 'cd project && aube install'
+	chmod u+w "$AUBE_GLOBAL_VIRTUAL_STORE_DIR/v1/.projects"
+	assert_failure
+	refute_output --partial "Already up to date"
 }
 
 @test "aube store prune --dry-run reports candidates without deleting them" {

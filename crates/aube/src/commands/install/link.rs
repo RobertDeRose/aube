@@ -286,18 +286,38 @@ pub(super) fn run_link_phase(input: LinkPhaseInput<'_>) -> miette::Result<LinkPh
     if !patches_for_linker.is_empty() {
         linker = linker.with_patches(patches_for_linker);
     }
+    if linker.uses_global_virtual_store() {
+        super::super::gvs_registry::register_project(&store.virtual_store_dir(), cwd, aube_dir)
+            .wrap_err("failed to register project with global virtual store")?;
+    }
     let stats = if has_workspace {
         linker
             .link_workspace(cwd, graph_for_link, package_indices, ws_dirs)
-            .into_diagnostic()
-            .wrap_err("failed to link workspace node_modules")?
+            .map_err(|error| (error, "failed to link workspace node_modules"))
     } else {
         linker
             .link_all(cwd, graph_for_link, package_indices)
-            .into_diagnostic()
-            .wrap_err("failed to link node_modules")?
+            .map_err(|error| (error, "failed to link node_modules"))
     };
-
+    let stats = match stats {
+        Ok(stats) => stats,
+        Err((error, context)) => {
+            if linker.uses_global_virtual_store()
+                && let Err(cleanup_error) = super::super::gvs_registry::unregister_if_unreferenced(
+                    &store.virtual_store_dir(),
+                    cwd,
+                    aube_dir,
+                )
+            {
+                tracing::debug!("failed to clean up GVS project registration: {cleanup_error}");
+            }
+            return Err(error).into_diagnostic().wrap_err(context);
+        }
+    };
+    if linker.uses_global_virtual_store() {
+        super::super::gvs_registry::register_project(&store.virtual_store_dir(), cwd, aube_dir)
+            .wrap_err("failed to record project entries in the global virtual store")?;
+    }
     tracing::debug!(
         "phase:link {:.1?} ({} files)",
         phase_start.elapsed(),
