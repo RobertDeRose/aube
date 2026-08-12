@@ -28,6 +28,19 @@ use aube_manifest::PackageJson;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+
+const MAX_SCRIPT_OUTPUT_RECORD_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptOutputStream {
+    Stdout,
+    Stderr,
+}
+
+pub trait ScriptOutputReporter: Send + Sync + 'static {
+    fn report(&self, stream: ScriptOutputStream, line: String);
+}
 
 /// Settings that affect every package-script shell aube spawns.
 #[derive(Debug, Clone, Default)]
@@ -142,10 +155,11 @@ impl Drop for ScriptJailHomeCleanup {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 struct ScriptSettingsState {
     settings: ScriptSettings,
     node_bin_dir_precedes_project_bins: bool,
+    output_reporter: Option<std::sync::Arc<dyn ScriptOutputReporter>>,
 }
 
 static SCRIPT_SETTINGS: std::sync::OnceLock<std::sync::RwLock<ScriptSettingsState>> =
@@ -198,22 +212,50 @@ pub fn set_script_settings_with_path_order(
     settings: ScriptSettings,
     node_bin_dir_precedes_project_bins: bool,
 ) {
-    let state = ScriptSettingsState {
-        settings,
-        node_bin_dir_precedes_project_bins,
-    };
     if INSTALL_SCRIPT_SETTINGS
         .try_with(|slot| match slot.write() {
-            Ok(mut guard) => *guard = state.clone(),
-            Err(poisoned) => *poisoned.into_inner() = state.clone(),
+            Ok(mut guard) => {
+                guard.settings = settings.clone();
+                guard.node_bin_dir_precedes_project_bins = node_bin_dir_precedes_project_bins;
+            }
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.settings = settings.clone();
+                guard.node_bin_dir_precedes_project_bins = node_bin_dir_precedes_project_bins;
+            }
         })
         .is_ok()
     {
         return;
     }
     match script_settings_lock().write() {
-        Ok(mut guard) => *guard = state,
-        Err(poisoned) => *poisoned.into_inner() = state,
+        Ok(mut guard) => {
+            guard.settings = settings;
+            guard.node_bin_dir_precedes_project_bins = node_bin_dir_precedes_project_bins;
+        }
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            guard.settings = settings;
+            guard.node_bin_dir_precedes_project_bins = node_bin_dir_precedes_project_bins;
+        }
+    }
+}
+
+/// Route lifecycle child output through an embedding host. When unset,
+/// scripts inherit the parent process's stdout and stderr as usual.
+pub fn set_output_reporter(reporter: Option<std::sync::Arc<dyn ScriptOutputReporter>>) {
+    if INSTALL_SCRIPT_SETTINGS
+        .try_with(|slot| match slot.write() {
+            Ok(mut guard) => guard.output_reporter = reporter.clone(),
+            Err(poisoned) => poisoned.into_inner().output_reporter = reporter.clone(),
+        })
+        .is_ok()
+    {
+        return;
+    }
+    match script_settings_lock().write() {
+        Ok(mut guard) => guard.output_reporter = reporter,
+        Err(poisoned) => poisoned.into_inner().output_reporter = reporter,
     }
 }
 
@@ -1079,6 +1121,11 @@ async fn run_command_killing_descendants(
     mut cmd: tokio::process::Command,
     script_name: &str,
 ) -> Result<std::process::ExitStatus, Error> {
+    let output_reporter = script_settings_state().output_reporter;
+    if output_reporter.is_some() {
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+    }
     let mut child = cmd
         .spawn()
         .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
@@ -1114,10 +1161,103 @@ async fn run_command_killing_descendants(
             None
         }
     };
-    child
-        .wait()
-        .await
-        .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))
+    let Some(reporter) = output_reporter else {
+        return child
+            .wait()
+            .await
+            .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()));
+    };
+    let stdout = child.stdout.take().ok_or_else(|| {
+        Error::Spawn(
+            script_name.to_string(),
+            "failed to capture lifecycle stdout".to_string(),
+        )
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        Error::Spawn(
+            script_name.to_string(),
+            "failed to capture lifecycle stderr".to_string(),
+        )
+    })?;
+    let (status, stdout_result, stderr_result) = tokio::join!(
+        child.wait(),
+        report_script_output(stdout, ScriptOutputStream::Stdout, reporter.clone()),
+        report_script_output(stderr, ScriptOutputStream::Stderr, reporter),
+    );
+    stdout_result.map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
+    stderr_result.map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
+    status.map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))
+}
+
+async fn report_script_output<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
+    stream: ScriptOutputStream,
+    reporter: std::sync::Arc<dyn ScriptOutputReporter>,
+) -> std::io::Result<()> {
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut buffer = Vec::new();
+    let mut continued_record = false;
+    loop {
+        buffer.clear();
+        let mut limited = (&mut reader).take(MAX_SCRIPT_OUTPUT_RECORD_BYTES as u64);
+        if limited.read_until(b'\n', &mut buffer).await? == 0 {
+            return Ok(());
+        }
+        let record_terminated = buffer.last() == Some(&b'\n');
+        if record_terminated {
+            buffer.pop();
+            if buffer.last() == Some(&b'\r') {
+                buffer.pop();
+            }
+        }
+        if !(continued_record && record_terminated && buffer.is_empty()) {
+            reporter.report(stream, String::from_utf8_lossy(&buffer).into_owned());
+        }
+        continued_record = !record_terminated;
+    }
+}
+
+#[cfg(test)]
+mod script_output_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[derive(Default)]
+    struct RecordingReporter(std::sync::Mutex<Vec<String>>);
+
+    impl ScriptOutputReporter for RecordingReporter {
+        fn report(&self, _stream: ScriptOutputStream, line: String) {
+            self.0.lock().unwrap().push(line);
+        }
+    }
+
+    #[tokio::test]
+    async fn unterminated_output_is_reported_in_bounded_chunks() {
+        let reporter = std::sync::Arc::new(RecordingReporter::default());
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let mut output = vec![b'x'; MAX_SCRIPT_OUTPUT_RECORD_BYTES * 2 + 17];
+        output.extend_from_slice(b"\nnext\n");
+        let write = tokio::spawn(async move {
+            writer.write_all(&output).await.unwrap();
+        });
+
+        report_script_output(reader, ScriptOutputStream::Stdout, reporter.clone())
+            .await
+            .unwrap();
+        write.await.unwrap();
+
+        let messages = reporter.0.lock().unwrap();
+        assert_eq!(
+            messages.iter().map(String::len).collect::<Vec<_>>(),
+            [
+                MAX_SCRIPT_OUTPUT_RECORD_BYTES,
+                MAX_SCRIPT_OUTPUT_RECORD_BYTES,
+                17,
+                4,
+            ]
+        );
+        assert_eq!(messages.last().map(String::as_str), Some("next"));
+    }
 }
 
 /// Run a single npm-style script line through `sh -c` with the usual
@@ -1133,7 +1273,8 @@ async fn run_command_killing_descendants(
 /// `&[]` — their transitive bins are already hoisted into the
 /// project-level `.bin`.
 ///
-/// Inherits stdio from the parent so the user sees script output live.
+/// Inherits stdio from the parent so the user sees script output live, unless
+/// an embedding host installed a [`ScriptOutputReporter`].
 /// Returns Err on non-zero exit so install fails fast if a lifecycle
 /// script breaks, matching pnpm.
 #[allow(clippy::too_many_arguments)]
