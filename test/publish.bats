@@ -42,6 +42,29 @@ _write_publishable_pkg() {
 	assert_output --partial "index.js"
 }
 
+@test "aube publish accepts a prebuilt tarball outside a package directory" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "publish-smoke",
+		  "version": "0.1.0",
+		  "main": "index.js",
+		  "files": ["index.js"],
+		  "scripts": {"prepublishOnly": "touch publish-script-ran"}
+		}
+	EOF
+	echo 'module.exports = 1' >index.js
+	aube pack --ignore-scripts --pack-destination artifacts >/dev/null
+	rm package.json index.js
+
+	run aube publish ./artifacts/publish-smoke-0.1.0.tgz \
+		--dry-run --registry=https://r.example.com/
+	assert_success
+	assert_output --partial "publish-smoke@0.1.0"
+	assert_output --partial "package.json"
+	assert_output --partial "index.js"
+	refute [ -e publish-script-ran ]
+}
+
 @test "aube publish --dry-run URL-encodes scoped names" {
 	cat >package.json <<-'EOF'
 		{
@@ -400,6 +423,9 @@ const existing = {
   versions: { '0.1.0': { name: 'publish-smoke', version: '0.1.0' } },
 };
 const server = http.createServer((req, res) => {
+  if (req.method === 'GET') {
+    fs.appendFileSync('publish-server-get.log', `${req.url}\n`);
+  }
   if (req.method === 'GET' && req.url === '/publish-smoke') {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify(existing));
@@ -726,9 +752,15 @@ m.version = '0.1.0-sha.abc123';
 fs.writeFileSync('package.json', JSON.stringify(m, null, 2));
 NODE
 
-	run bash -c "aube publish --dry-run --json --registry=https://r.example.com/ | jq -r '.version'"
+	_start_publish_server
+	port="$(cat publish-server-port)"
+	run bash -c "aube publish --dry-run --json --registry=http://127.0.0.1:${port}/ | jq -r '.version'"
+	rc=$status
+	_stop_publish_server
+	[ "$rc" -eq 0 ]
 	assert_success
 	assert_output "0.1.0-sha.abc123"
+	assert_not_exists publish-server-get.log
 }
 
 @test "aube publish --dry-run --json emits a pnpm-compatible object" {
