@@ -250,6 +250,12 @@ pub struct InstallLayoutState {
     pub virtual_store_dir_max_length: Option<usize>,
     pub direct_entries: BTreeMap<String, Vec<String>>,
     pub packages: BTreeMap<String, InstalledPackageState>,
+    /// Expected targets for dependency links nested inside shared global
+    /// virtual-store entries. Keys are project-relative paths reached through
+    /// `node_modules/.aube/<dep_path>`; values are the exact link targets.
+    /// `None` identifies state written before this topology check existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gvs_nested_links: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -639,6 +645,68 @@ pub struct WriteStateLayout<'a> {
     pub aube_dir: &'a Path,
     pub virtual_store_dir_max_length: usize,
     pub placements: Option<&'a aube_linker::HoistedPlacements>,
+    pub use_global_virtual_store: bool,
+}
+
+fn collect_gvs_nested_links(
+    project_dir: &Path,
+    layout: &WriteStateLayout<'_>,
+) -> std::io::Result<Option<BTreeMap<String, String>>> {
+    let mut links = BTreeMap::new();
+    for (dep_path, pkg) in &layout.graph.packages {
+        let globally_shareable = pkg
+            .local_source
+            .as_ref()
+            .is_none_or(aube_lockfile::LocalSource::is_globally_shareable);
+        if !globally_shareable {
+            continue;
+        }
+        let aube_entry =
+            layout
+                .aube_dir
+                .join(aube_lockfile::dep_path_filename::dep_path_to_filename(
+                    dep_path,
+                    layout.virtual_store_dir_max_length,
+                ));
+        if std::fs::read_link(aube_entry).is_err() {
+            // Compatibility-selected registry packages can be materialized
+            // physically in the project even while the rest of the graph uses
+            // GVS. Their links are not shared cache topology and the linker
+            // handles them separately.
+            continue;
+        }
+        let package_dir = crate::commands::install::materialized_pkg_dir(
+            layout.aube_dir,
+            dep_path,
+            &pkg.name,
+            layout.virtual_store_dir_max_length,
+            layout.placements,
+        );
+        let node_modules_dir =
+            crate::commands::install::dep_modules_dir_for(&package_dir, &pkg.name);
+        for dep_name in pkg.dependencies.keys().filter(|name| *name != &pkg.name) {
+            let link_path = node_modules_dir.join(dep_name);
+            let Ok(target) = std::fs::read_link(&link_path) else {
+                tracing::debug!(
+                    path = %link_path.display(),
+                    "global virtual store link topology is not recordable"
+                );
+                return Ok(None);
+            };
+            let Some(target) = target.to_str() else {
+                tracing::debug!(
+                    path = %link_path.display(),
+                    "global virtual store link target is not valid UTF-8"
+                );
+                return Ok(None);
+            };
+            links.insert(
+                relative_path_or_original(&link_path, project_dir),
+                target.to_string(),
+            );
+        }
+    }
+    Ok(Some(links))
 }
 
 pub struct WriteStateInput<'a> {
@@ -669,7 +737,7 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
     let (lockfile_hash, lockfile_snapshot_name) =
         snapshot_active_lockfile(project_dir, &state_path)?;
     let settings_hash = hash_settings(project_dir, cli_flags);
-    let install_layout = InstallLayoutState::from_graph(project_dir, &layout);
+    let install_layout = InstallLayoutState::from_graph(project_dir, &layout)?;
 
     let package_json_shape_digests: BTreeMap<String, String> = package_json_hashes
         .keys()
@@ -1104,7 +1172,10 @@ fn remove_legacy_state_file(state_path: &Path) -> Result<(), std::io::Error> {
 }
 
 impl InstallLayoutState {
-    fn from_graph(project_dir: &Path, layout: &WriteStateLayout<'_>) -> Self {
+    fn from_graph(
+        project_dir: &Path,
+        layout: &WriteStateLayout<'_>,
+    ) -> Result<Self, std::io::Error> {
         let linker = match layout.node_linker {
             aube_linker::NodeLinker::Isolated => InstallLayoutMode::Isolated,
             aube_linker::NodeLinker::Hoisted => InstallLayoutMode::Hoisted,
@@ -1194,14 +1265,23 @@ impl InstallLayoutState {
             );
         }
 
-        Self {
+        let gvs_nested_links = if layout.use_global_virtual_store
+            && matches!(layout.node_linker, aube_linker::NodeLinker::Isolated)
+        {
+            collect_gvs_nested_links(project_dir, layout)?
+        } else {
+            None
+        };
+
+        Ok(Self {
             linker,
             modules_dir_name: layout.modules_dir_name.to_string(),
             hoisting_limits,
             virtual_store_dir_max_length: Some(layout.virtual_store_dir_max_length),
             direct_entries,
             packages,
-        }
+            gvs_nested_links,
+        })
     }
 }
 
@@ -1268,6 +1348,26 @@ fn verify_install_layout(
         }
     }
 
+    if let Some(reason) = stale_gvs_nested_link(project_dir, layout) {
+        return Some(reason);
+    }
+
+    None
+}
+
+pub fn gvs_nested_links_are_current(project_dir: &Path, layout: &InstallLayoutState) -> bool {
+    layout.gvs_nested_links.is_some() && stale_gvs_nested_link(project_dir, layout).is_none()
+}
+
+fn stale_gvs_nested_link(project_dir: &Path, layout: &InstallLayoutState) -> Option<String> {
+    for (rel, expected) in layout.gvs_nested_links.as_ref()? {
+        let path = project_dir.join(rel);
+        match std::fs::read_link(&path) {
+            Ok(actual) if actual == Path::new(expected) => {}
+            Ok(_) => return Some(format!("global virtual store link changed: {rel}")),
+            Err(_) => return Some(format!("global virtual store link missing: {rel}")),
+        }
+    }
     None
 }
 
@@ -1554,9 +1654,10 @@ mod tests {
     use super::{
         InstallLayoutMode, InstallLayoutState, InstallState, InstalledPackageState,
         WriteStateLayout, collect_package_json_hashes_from_manifests, empty_blake3_hash,
-        fresh_state_file, hash_file, hash_settings, install_state_file, member_lockfiles_stale,
-        read_hoisted_placements, read_or_migrate_fresh_state, relative_path_or_original,
-        remove_state, verify_install_layout, write_hoisted_placements,
+        fresh_state_file, gvs_nested_links_are_current, hash_file, hash_settings,
+        install_state_file, member_lockfiles_stale, read_hoisted_placements,
+        read_or_migrate_fresh_state, relative_path_or_original, remove_state,
+        verify_install_layout, write_hoisted_placements,
     };
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -1630,6 +1731,7 @@ mod tests {
                         link: false,
                     },
                 )]),
+                gvs_nested_links: None,
             }),
             unreviewed_builds: Vec::new(),
         };
@@ -1679,6 +1781,7 @@ mod tests {
                     link: true,
                 },
             )]),
+            gvs_nested_links: None,
         };
 
         assert_eq!(verify_install_layout(&project_dir, Some(&state)), None);
@@ -1702,12 +1805,50 @@ mod tests {
                 vec!["node_modules/@scope/api".to_string()],
             )]),
             packages: BTreeMap::new(),
+            gvs_nested_links: None,
         };
 
         assert_eq!(
             verify_install_layout(&project_dir, Some(&state)),
             Some("installed entry missing: node_modules/@scope/api".to_string())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_install_layout_flags_retargeted_gvs_nested_link() {
+        let project_dir = temp_project_dir("retargeted-gvs-link");
+        let link_path = project_dir.join("node_modules/.aube/parent@1.0.0/node_modules/child");
+        std::fs::create_dir_all(link_path.parent().expect("link parent"))
+            .expect("link parent should write");
+        std::os::unix::fs::symlink("../../child@1.0.0/node_modules/child", &link_path)
+            .expect("nested link should write");
+        let state = InstallLayoutState {
+            linker: InstallLayoutMode::Isolated,
+            modules_dir_name: "node_modules".to_string(),
+            hoisting_limits: None,
+            virtual_store_dir_max_length: Some(120),
+            direct_entries: BTreeMap::new(),
+            packages: BTreeMap::new(),
+            gvs_nested_links: Some(BTreeMap::from([(
+                "node_modules/.aube/parent@1.0.0/node_modules/child".to_string(),
+                "../../child@1.0.0/node_modules/child".to_string(),
+            )])),
+        };
+        assert!(gvs_nested_links_are_current(&project_dir, &state));
+
+        std::fs::remove_file(&link_path).expect("old link should remove");
+        std::os::unix::fs::symlink("../../child@1.0.0-stale/node_modules/child", &link_path)
+            .expect("stale link should write");
+
+        assert_eq!(
+            verify_install_layout(&project_dir, Some(&state)),
+            Some(
+                "global virtual store link changed: node_modules/.aube/parent@1.0.0/node_modules/child"
+                    .to_string()
+            )
+        );
+        assert!(!gvs_nested_links_are_current(&project_dir, &state));
     }
 
     #[test]
@@ -1738,8 +1879,10 @@ mod tests {
                 aube_dir: &aube_dir,
                 virtual_store_dir_max_length: 120,
                 placements: None,
+                use_global_virtual_store: false,
             },
-        );
+        )
+        .expect("layout should build");
 
         // The root importer's direct symlink sits under the workspace
         // root's node_modules.
@@ -1756,6 +1899,111 @@ mod tests {
             layout.direct_entries.get("packages/svc"),
             Some(&vec!["packages/svc/node_modules/zod".to_string()])
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_graph_records_scoped_gvs_links_from_package_node_modules() {
+        let project_dir = temp_project_dir("scoped-gvs-links");
+        let aube_dir = project_dir.join("node_modules/.aube");
+        let dep_path = "@scope/parent@1.0.0";
+        let entry_name = aube_lockfile::dep_path_filename::dep_path_to_filename(dep_path, 120);
+        let global_entry = project_dir.join("gvs/scoped-parent");
+        let global_modules = global_entry.join("node_modules");
+        std::fs::create_dir_all(global_modules.join("@scope/parent"))
+            .expect("scoped package should write");
+        std::os::unix::fs::symlink(
+            "../../child@1.0.0/node_modules/child",
+            global_modules.join("child"),
+        )
+        .expect("nested link should write");
+        std::fs::create_dir_all(&aube_dir).expect("virtual store should write");
+        std::os::unix::fs::symlink(&global_entry, aube_dir.join(&entry_name))
+            .expect("project GVS link should write");
+
+        let graph = aube_lockfile::LockfileGraph {
+            packages: BTreeMap::from([(
+                dep_path.to_string(),
+                aube_lockfile::LockedPackage {
+                    name: "@scope/parent".to_string(),
+                    version: "1.0.0".to_string(),
+                    dep_path: dep_path.to_string(),
+                    dependencies: BTreeMap::from([("child".to_string(), "1.0.0".to_string())]),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        let layout = InstallLayoutState::from_graph(
+            &project_dir,
+            &WriteStateLayout {
+                graph: &graph,
+                node_linker: aube_linker::NodeLinker::Isolated,
+                hoisting_limits: aube_linker::HoistingLimits::None,
+                modules_dir_name: "node_modules",
+                aube_dir: &aube_dir,
+                virtual_store_dir_max_length: 120,
+                placements: None,
+                use_global_virtual_store: true,
+            },
+        )
+        .expect("scoped GVS layout should build");
+
+        let expected_path = format!("node_modules/.aube/{entry_name}/node_modules/child");
+        assert_eq!(
+            layout
+                .gvs_nested_links
+                .as_ref()
+                .and_then(|links| links.get(&expected_path)),
+            Some(&"../../child@1.0.0/node_modules/child".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_graph_skips_unreadable_gvs_link_topology() {
+        let project_dir = temp_project_dir("unreadable-gvs-links");
+        let aube_dir = project_dir.join("node_modules/.aube");
+        let dep_path = "parent@1.0.0";
+        let entry_name = aube_lockfile::dep_path_filename::dep_path_to_filename(dep_path, 120);
+        let global_entry = project_dir.join("gvs/parent");
+        std::fs::create_dir_all(global_entry.join("node_modules/parent"))
+            .expect("package should write");
+        std::fs::create_dir_all(&aube_dir).expect("virtual store should write");
+        std::os::unix::fs::symlink(&global_entry, aube_dir.join(entry_name))
+            .expect("project GVS link should write");
+
+        let graph = aube_lockfile::LockfileGraph {
+            packages: BTreeMap::from([(
+                dep_path.to_string(),
+                aube_lockfile::LockedPackage {
+                    name: "parent".to_string(),
+                    version: "1.0.0".to_string(),
+                    dep_path: dep_path.to_string(),
+                    dependencies: BTreeMap::from([("missing".to_string(), "1.0.0".to_string())]),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        let layout = InstallLayoutState::from_graph(
+            &project_dir,
+            &WriteStateLayout {
+                graph: &graph,
+                node_linker: aube_linker::NodeLinker::Isolated,
+                hoisting_limits: aube_linker::HoistingLimits::None,
+                modules_dir_name: "node_modules",
+                aube_dir: &aube_dir,
+                virtual_store_dir_max_length: 120,
+                placements: None,
+                use_global_virtual_store: true,
+            },
+        )
+        .expect("unreadable topology should not fail state recording");
+
+        assert_eq!(layout.gvs_nested_links, None);
     }
 
     #[test]
@@ -1790,8 +2038,10 @@ mod tests {
                 aube_dir: &aube_dir,
                 virtual_store_dir_max_length: 120,
                 placements: Some(&placements),
+                use_global_virtual_store: false,
             },
-        );
+        )
+        .expect("hoisted layout should build");
 
         assert_eq!(
             layout.direct_entries.get("packages/app"),
@@ -1859,6 +2109,7 @@ mod tests {
                 virtual_store_dir_max_length: None,
                 direct_entries: BTreeMap::new(),
                 packages: BTreeMap::new(),
+                gvs_nested_links: None,
             }),
             unreviewed_builds: Vec::new(),
         };
