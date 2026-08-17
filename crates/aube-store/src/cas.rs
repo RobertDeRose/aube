@@ -85,7 +85,7 @@ fn wait_for_cas_file_len(path: &Path, expected_len: u64) {
 ///
 /// A malformed size predicate disables compression (returns `None`)
 /// rather than silently widening the gate; the addon still lands plain.
-fn store_compression_gate() -> Option<&'static Gate> {
+pub(crate) fn store_compression_gate() -> Option<&'static Gate> {
     static GATE: std::sync::OnceLock<Option<Gate>> = std::sync::OnceLock::new();
     GATE.get_or_init(|| {
         let raw = aube_util::env::embedder_env("COMPRESS_STORE")?;
@@ -435,6 +435,133 @@ impl Store {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Publish a tempfile that was written and BLAKE3-hashed while its tar
+    /// entry was decoded. The tempfile lives under the CAS root, so
+    /// `persist_noclobber` is an atomic same-filesystem publish and does not
+    /// copy the entry a second time.
+    pub(crate) fn import_hashed_tempfile(
+        &self,
+        mut temp: tempfile::NamedTempFile,
+        hex_hash: String,
+        len: u64,
+        executable: bool,
+    ) -> Result<StoredFile, Error> {
+        let store_path = self.file_path_from_hex(&hex_hash);
+        let parent = store_path
+            .parent()
+            .ok_or_else(|| Error::Io(store_path.clone(), std::io::ErrorKind::NotFound.into()))?;
+        std::fs::create_dir_all(parent).map_err(|e| Error::Io(parent.to_path_buf(), e))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temp.as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o644))
+                .map_err(|e| Error::Io(store_path.clone(), e))?;
+        }
+
+        // The macOS byte importer publishes directly into the final path while
+        // holding this same shard lock. Hold it through publication and any
+        // recovery so a streamed writer cannot unlink an in-progress file.
+        #[cfg(target_os = "macos")]
+        let _shard_guard = hex_hash
+            .get(..2)
+            .and_then(|shard| u8::from_str_radix(shard, 16).ok())
+            .map(|shard| {
+                FAST_PATH_SHARD_LOCKS[shard as usize]
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            });
+        #[cfg(target_os = "macos")]
+        let mut recovery_lock = None;
+
+        let mut retried_missing_parent = false;
+        let mut retried_torn_entry = false;
+        let outcome = loop {
+            match temp.persist_noclobber(&store_path) {
+                Ok(_) => break CasWriteOutcome::Created,
+                Err(e) if e.error.kind() == std::io::ErrorKind::NotFound => {
+                    temp = e.file;
+                    if retried_missing_parent {
+                        return Err(Error::Io(store_path.clone(), e.error));
+                    }
+                    // A concurrent prune may remove the shard after the
+                    // initial create. Match the buffered importer by
+                    // recreating it and retrying publication once.
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| Error::Io(parent.to_path_buf(), e))?;
+                    retried_missing_parent = true;
+                }
+                Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    temp = e.file;
+                    if !cas_file_matches_len(&store_path, len) {
+                        wait_for_cas_file_len(&store_path, len);
+                    }
+                    // A slow-path process can observe a partial final file
+                    // owned by another process that holds the macOS install
+                    // lock and is writing directly. Wait for that process
+                    // before deciding the entry is torn. The in-process shard
+                    // mutex above separately serializes recovery threads in
+                    // this process.
+                    #[cfg(target_os = "macos")]
+                    if !self.fast_path.load(Ordering::Acquire)
+                        && !cas_file_matches_len(&store_path, len)
+                        && recovery_lock.is_none()
+                    {
+                        let lock_dir = self
+                            .root
+                            .parent()
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(|| self.root.clone());
+                        std::fs::create_dir_all(&lock_dir)
+                            .map_err(|e| Error::Io(lock_dir.clone(), e))?;
+                        let lock_path = lock_dir.join(".install.lock");
+                        let file = std::fs::OpenOptions::new()
+                            .create(true)
+                            .truncate(false)
+                            .write(true)
+                            .open(&lock_path)
+                            .map_err(|e| Error::Io(lock_path.clone(), e))?;
+                        file.lock().map_err(|e| Error::Io(lock_path.clone(), e))?;
+                        recovery_lock = Some(file);
+                    }
+                    if cas_file_matches_len(&store_path, len) {
+                        break CasWriteOutcome::AlreadyExisted;
+                    } else if retried_torn_entry {
+                        return Err(Error::Io(store_path.clone(), e.error));
+                    } else {
+                        // Match `import_bytes` recovery for a crashed predecessor:
+                        // retain our complete staging file, remove the torn CAS
+                        // entry, and retry the no-clobber publish once.
+                        let _ = xx::file::remove_file(&store_path);
+                        retried_torn_entry = true;
+                    }
+                }
+                Err(e) => return Err(Error::Io(store_path.clone(), e.error)),
+            }
+        };
+
+        if aube_util::diag::enabled() {
+            let name = match outcome {
+                CasWriteOutcome::Created => "cas_miss",
+                CasWriteOutcome::AlreadyExisted => "cas_hit",
+            };
+            aube_util::diag::instant_lazy(aube_util::diag::Category::Store, name, || {
+                format!(r#"{{"size":{len}}}"#)
+            });
+        }
+
+        if executable {
+            self.write_exec_marker(&store_path)?;
+        }
+        Ok(StoredFile {
+            hex_hash,
+            store_path,
+            executable,
+            size: Some(len),
+        })
     }
 
     /// Import a single file's content into the store. Returns the stored file info.
