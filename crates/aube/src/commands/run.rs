@@ -166,6 +166,14 @@ pub async fn run(
     run_args: RunArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<Option<i32>> {
+    run_with_process_replacement(run_args, filter, false).await
+}
+
+pub(crate) async fn run_with_process_replacement(
+    run_args: RunArgs,
+    filter: aube_workspace::selector::EffectiveFilter,
+    replace_process: bool,
+) -> miette::Result<Option<i32>> {
     run_args.network.install_overrides();
     run_args.lockfile.install_overrides();
     run_args.virtual_store.install_overrides();
@@ -215,8 +223,17 @@ pub async fn run(
         no_bail,
     };
     run_script_with(
-        &script, &args, &node_args, no_install, if_present, parallel, silent, &filter, recursive,
+        &script,
+        &args,
+        &node_args,
+        no_install,
+        if_present,
+        parallel,
+        silent,
+        &filter,
+        recursive,
         None,
+        replace_process,
     )
     .await
 }
@@ -527,6 +544,7 @@ pub(crate) async fn run_script(
         filter,
         RecursiveOpts::default(),
         None,
+        false,
     )
     .await
 }
@@ -555,6 +573,7 @@ pub(crate) async fn run_script_in(
         filter,
         RecursiveOpts::default(),
         Some(base_dir),
+        false,
     )
     .await
 }
@@ -571,6 +590,7 @@ pub(crate) async fn run_script_with(
     filter: &aube_workspace::selector::EffectiveFilter,
     recursive: RecursiveOpts,
     base_dir: Option<std::path::PathBuf>,
+    replace_process: bool,
 ) -> miette::Result<Option<i32>> {
     let initial_cwd = match base_dir {
         Some(dir) => dir,
@@ -647,8 +667,11 @@ pub(crate) async fn run_script_with(
         script,
         args,
         node_args,
-        enable_pre_post_scripts,
-        silent,
+        ScriptChainOptions {
+            enable_pre_post_scripts,
+            silent,
+            replace_process,
+        },
     )
     .await
 }
@@ -758,8 +781,11 @@ async fn run_script_filtered(
             script,
             args,
             node_args,
-            enable_pre_post_scripts,
-            silent,
+            ScriptChainOptions {
+                enable_pre_post_scripts,
+                silent,
+                replace_process: false,
+            },
         )
         .await?
         {
@@ -1332,33 +1358,91 @@ fn inject_node_args(cmd: &str, node_args: &[String], quote: impl Fn(&str) -> Str
 /// any stage short-circuits and returns `Ok(Some(code))` (the pre/main/post
 /// ordering matches npm/pnpm: a failing pre-script stops the chain before
 /// the main script runs). `Ok(None)` means every stage that ran succeeded.
-pub(crate) async fn exec_script_chain(
+#[derive(Clone, Copy)]
+struct ScriptChainOptions {
+    enable_pre_post_scripts: bool,
+    silent: bool,
+    replace_process: bool,
+}
+
+async fn exec_script_chain(
     cwd: &Path,
     manifest: &PackageJson,
     script: &str,
     args: &[String],
     node_args: &[String],
-    enable_pre_post_scripts: bool,
-    silent: bool,
+    options: ScriptChainOptions,
 ) -> miette::Result<Option<i32>> {
-    if enable_pre_post_scripts {
+    if options.enable_pre_post_scripts {
         let pre = format!("pre{script}");
-        if let Some(Some(code)) = exec_optional(cwd, manifest, &pre, &[], silent).await? {
+        if let Some(Some(code)) = exec_optional(cwd, manifest, &pre, &[], options.silent).await? {
             return Ok(Some(code));
         }
     }
+    let post = format!("post{script}");
+    if options.replace_process
+        && (!options.enable_pre_post_scripts || !manifest.scripts.contains_key(&post))
+    {
+        return exec_script_replacing_process(
+            cwd,
+            manifest,
+            script,
+            args,
+            node_args,
+            options.silent,
+        )
+        .await;
+    }
     if let Some(code) =
-        exec_script_with_node_args(cwd, manifest, script, args, node_args, silent).await?
+        exec_script_with_node_args(cwd, manifest, script, args, node_args, options.silent).await?
     {
         return Ok(Some(code));
     }
-    if enable_pre_post_scripts {
-        let post = format!("post{script}");
-        if let Some(Some(code)) = exec_optional(cwd, manifest, &post, &[], silent).await? {
-            return Ok(Some(code));
-        }
+    if options.enable_pre_post_scripts
+        && let Some(Some(code)) = exec_optional(cwd, manifest, &post, &[], options.silent).await?
+    {
+        return Ok(Some(code));
     }
     Ok(None)
+}
+
+#[cfg(unix)]
+async fn exec_script_replacing_process(
+    cwd: &Path,
+    manifest: &PackageJson,
+    script: &str,
+    args: &[String],
+    node_args: &[String],
+    silent: bool,
+) -> miette::Result<Option<i32>> {
+    use std::os::unix::process::CommandExt;
+
+    let cmd = manifest
+        .scripts
+        .get(script)
+        .ok_or_else(|| miette!("script not found: {script}"))?;
+    let (mut command, echo_line) =
+        build_script_command(cwd, manifest, script, cmd, args, node_args).await?;
+    if !silent {
+        super::run_output::echo_script_command(&echo_line, None);
+    }
+    let error = command.as_std_mut().exec();
+    Err(miette::Report::new(aube_scripts::Error::Spawn(
+        script.to_string(),
+        error.to_string(),
+    )))
+}
+
+#[cfg(not(unix))]
+async fn exec_script_replacing_process(
+    cwd: &Path,
+    manifest: &PackageJson,
+    script: &str,
+    args: &[String],
+    node_args: &[String],
+    silent: bool,
+) -> miette::Result<Option<i32>> {
+    exec_script_with_node_args(cwd, manifest, script, args, node_args, silent).await
 }
 
 /// Run a script. On a non-zero child exit, returns `Ok(Some(code))` so the
