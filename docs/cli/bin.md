@@ -12,26 +12,8 @@ Print the path to `node_modules/.bin`
 
 Print the global bin directory instead of the project's
 
-### `-w --workspace-root`
+### `-w --workspace-root --workspace`
 
 Print the workspace-root bin directory instead of the current package's.
 
 Mirrors `pnpm bin -w`: from a sub-package, resolves the enclosing workspace root and prints its `node_modules/.bin`. No-op when no workspace root exists above cwd (single-project install), so the flag is safe to leave in shell aliases.
-
-Examples:
-
-  $ aube bin
-  /home/user/project/node_modules/.bin
-
-  $ aube bin -g
-  /home/user/.local/share/aube/global/node_modules/.bin
-
-  # From a workspace package, -w prints the workspace-root bin directory
-  $ cd packages/app
-  $ aube bin
-  /home/user/project/packages/app/node_modules/.bin
-  $ aube bin -w
-  /home/user/project/node_modules/.bin
-
-  # Extend PATH with the project bin directory
-  $ export PATH="$(aube bin):$PATH"

@@ -53,12 +53,7 @@ aube-scripts = { workspace = true }
 aube-workspace = { workspace = true }
 bytes = "1"
 xx = { workspace = true }
-clap = { workspace = true }
-# Only the aube binary (src/main.rs) uses this, for the aube-specific `usage`
-# (usage.jdx.dev KDL) command; the embeddable lib no longer carries it. Cargo
-# can't scope a dependency to bin-only within a crate that also has a lib, so
-# it stays here.
-clap_usage = "5"
+usage-rs = { workspace = true }
 strum = { workspace = true }
 clx = { workspace = true }
 console = "0.16"
@@ -142,7 +137,6 @@ hickory-dns = ["reqwest/hickory-dns", "aube-registry/hickory-dns"]
 workspace-yaml-preserve = ["aube-manifest/workspace-yaml-preserve"]
 
 [dev-dependencies]
-clap-sort = "1"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"

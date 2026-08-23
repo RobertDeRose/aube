@@ -12,7 +12,7 @@ Exits with status 1 if any issue is reported.
 
 ### `--json`
 
-Emit a JSON report instead of the human-readable tree
+Emit a JSON report instead of the human-readable tree.
 
 Examples:
 

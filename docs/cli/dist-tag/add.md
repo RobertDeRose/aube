@@ -12,14 +12,14 @@ Spec must include a concrete version: `aube dist-tag add react@18.2.0 stable`. T
 
 ### `<SPEC>`
 
-Package spec in `name@version` form (exact version required, ranges and tags aren't resolved here)
+Package spec in `name@version` form (exact version required, ranges and tags aren't resolved here).
 
 ### `[TAG]`
 
-Tag to create or update. Defaults to `latest`
+Tag to create or update. Defaults to `latest`.
 
 ## Flags
 
 ### `--otp <OTP>`
 
-One-time password from a 2FA authenticator; sent as `npm-otp`
+One-time password from a 2FA authenticator; sent as `npm-otp`.

@@ -20,8 +20,8 @@ Each name must match a currently-ignored build. Unknown names are rejected so a 
 
 ### `--all`
 
-Approve every pending ignored build without prompting
+Approve every pending ignored build without prompting.
 
 ### `-g --global`
 
-Operate on globally-installed packages instead of the current project
+Operate on globally-installed packages instead of the current project.

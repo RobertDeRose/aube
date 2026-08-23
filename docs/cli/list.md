@@ -23,7 +23,7 @@ Show only devDependencies
 
 List globally-installed packages instead of the project's dependency tree
 
-### `-P --prod`
+### `-P --prod --production`
 
 Show only production dependencies (skip devDependencies)
 
@@ -55,7 +55,7 @@ Emit a JSON array of package entries.
 
 ### `--lockfile-only`
 
-List packages from the lockfile only, without checking node_modules
+List packages from the lockfile only, without checking node_modules.
 
 ### `--long`
 

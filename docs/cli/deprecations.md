@@ -10,15 +10,17 @@ Report deprecated packages in the resolved dependency graph
 
 ### `--exit-code`
 
-Exit with a non-zero status if any deprecations are found
+Exit with a non-zero status if any deprecations are found.
 
 ### `--json`
 
-Emit JSON instead of the default text layout
+Emit JSON instead of the default text layout.
 
 ### `--transitive`
 
-Include transitive dependencies as well as direct ones
+Include transitive dependencies as well as direct ones.
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -30,7 +32,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 

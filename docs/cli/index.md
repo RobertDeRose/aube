@@ -3,13 +3,11 @@
 
 **Usage**: `aube [FLAGS] <SUBCOMMAND>`
 
-**Version**: 1.41.0
-
 - **Usage**: `aube [FLAGS] <SUBCOMMAND>`
 
 ## Global Flags
 
-### `-C --dir <DIR>`
+### `-C --dir --cd --prefix <DIR>`
 
 Change to directory before running (like `make -C` or `mise --cd`)
 
@@ -43,9 +41,13 @@ Force colored output even when stderr is not a TTY.
 
 Overrides `NO_COLOR` / `CLICOLOR=0`. Mutually exclusive with `--no-color`.
 
-### `--diag <MODE>`
+### `--diag [MODE]`
 
-Enable cold-install deep diagnostics. Modes: summary  — sum_ms / mean / max / %wall table at end trace    — summary + critical path + starvation + what-if + lifecycle live     — like trace, plus print every span >= 100ms to stderr live full     — like trace, plus write JSONL trace to a file (defaults to ./aube-diag.jsonl)
+Enable cold-install deep diagnostics. Modes:
+  summary  — sum_ms / mean / max / %wall table at end
+  trace    — summary + critical path + starvation + what-if + lifecycle
+  live     — like trace, plus print every span >= 100ms to stderr live
+  full     — like trace, plus write JSONL trace to a file (defaults to ./aube-diag.jsonl)
 
 Quick form: `--diag` with no value defaults to `trace`. Output file path can be set via `--diag-file`. Threshold for live mode via `--diag-threshold-ms`.
 
@@ -55,7 +57,7 @@ Path for `--diag full` JSONL trace (default: ./aube-diag.jsonl)
 
 ### `--diag-threshold-ms <MS>`
 
-Live-mode threshold: only print spans whose duration is >= N ms (default 100)
+Live-mode threshold: only print spans whose duration is >= N ms (default 100).
 
 ### `--fail-if-no-match`
 
@@ -71,7 +73,7 @@ Same selector grammar as `--filter`, but graph walks (`pkg...`, `...pkg`) only f
 
 ### `--loglevel <LEVEL>`
 
-Set the log level. Logs at or above this level are shown
+Set the log level. Logs at or above this level are shown.
 
 **Choices:**
 
@@ -107,7 +109,7 @@ Suppress all non-error output (alias for `--loglevel silent`)
 
 ### `--workspace-root`
 
-Run from the workspace root regardless of the current package
+Run from the workspace root regardless of the current package.
 
 ## Subcommands
 
@@ -139,7 +141,7 @@ Run from the workspace root regardless of the current package
 - [`aube check [--json]`](/cli/check.md)
 - [`aube ci [FLAGS]`](/cli/ci.md)
 - [`aube clean [-l --lockfile]`](/cli/clean.md)
-- [`aube completion <SHELL>`](/cli/completion.md)
+- [`aube completion [--force] [--install] <SHELL>`](/cli/completion.md)
 - [`aube config [FLAGS] <SUBCOMMAND>`](/cli/config.md)
 - [`aube config delete [--local] [--location <LOCATION>] <KEY>`](/cli/config/delete.md)
 - [`aube config explain <KEY>`](/cli/config/explain.md)

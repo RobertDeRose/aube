@@ -16,8 +16,8 @@ On reflink filesystems such as APFS or btrfs, link counts cannot prove project r
 
 ### `--dry-run`
 
-Do not actually delete anything; report what would be pruned
+Do not actually delete anything; report what would be pruned.
 
 ### `--json`
 
-Emit the dry-run plan as one machine-readable JSON document (requires --dry-run)
+Emit the dry-run plan as one machine-readable JSON document.

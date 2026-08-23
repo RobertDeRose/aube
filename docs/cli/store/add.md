@@ -12,4 +12,4 @@ Each argument is a package spec: `lodash`, `lodash@4.17.21`, `react@next`, or `e
 
 ### `<PACKAGES>…`
 
-Package specs to fetch into the store
+Package specs to fetch into the store.

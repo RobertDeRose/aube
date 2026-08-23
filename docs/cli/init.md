@@ -20,12 +20,9 @@ Adds a `packageManager` field to `package.json`.
 
 ### `--init-type <commonjs|module>`
 
-Set the module system for the package. Defaults to `commonjs`
+Set the module system for the package. Defaults to `commonjs`.
 
-**Choices:**
-
-- `commonjs`
-- `module`
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -37,7 +34,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 

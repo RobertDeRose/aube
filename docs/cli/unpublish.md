@@ -10,13 +10,13 @@ Remove a package (or a single version) from the registry
 
 ### `[SPEC]`
 
-Package spec: `name`, `name@version`, or omitted to use the current project's `package.json`
+Package spec: `name`, `name@version`, or omitted to use the current project's `package.json`.
 
 ## Flags
 
 ### `--dry-run`
 
-Don't talk to the registry; print what the command would do
+Don't talk to the registry; print what the command would do.
 
 ### `-f --force`
 
@@ -30,6 +30,8 @@ One-time password for registries that require 2FA.
 
 Sent verbatim as the `npm-otp` header.
 
+## Network
+
 ### `--fetch-retries <N>`
 
 Number of retry attempts for failed registry fetches.
@@ -40,7 +42,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 

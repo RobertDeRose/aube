@@ -20,7 +20,7 @@ Show only devDependencies
 
 ### `-g --global`
 
-Check globally-installed packages instead of the current project
+Check globally-installed packages instead of the current project.
 
 ### `--json`
 
@@ -30,15 +30,17 @@ Emit a JSON object keyed by package name instead of the default table
 
 Also show deps whose `wanted` version matches the installed version
 
-### `-P --prod`
+### `-P --prod --production`
 
 Show only production dependencies (skip devDependencies)
 
-### `-w --workspace-root`
+### `-w --workspace-root --workspace`
 
 Operate on the workspace root regardless of cwd.
 
 Mirrors pnpm's `-w/--workspace-root`: from a sub-package, `aube outdated -w` reports the root manifest's deps instead of the sub-package's. No-op when paired with `-r` / `--filter` (those already drive workspace selection from the root).
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -50,7 +52,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 
@@ -75,37 +77,3 @@ Overrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml`
 Override the default registry URL for this invocation.
 
 Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
-
-Examples:
-
-  $ aube outdated
-  Package     Current  Wanted   Latest
-  lodash      4.17.20  4.17.21  4.17.21
-  typescript  5.3.3    5.3.3    5.4.5
-  zod         3.22.4   3.22.4   3.23.8
-
-  # Also print the package.json specifier and dep type
-  $ aube outdated --long
-  Package     Current  Wanted   Latest
-  lodash      4.17.20  4.17.21  4.17.21
-  typescript  5.3.3    5.3.3    5.4.5
-
-    lodash (dependencies): ^4.17.20
-    typescript (devDependencies): ^5.3.0
-
-  # Filter by prefix
-  $ aube outdated '@babel/*'
-
-  # Machine-readable (pnpm-compatible shape)
-  $ aube outdated --json
-  {
-    "lodash": {
-      "current": "4.17.20",
-      "wanted": "4.17.21",
-      "latest": "4.17.21"
-    }
-  }
-
-  # Nothing to report exits 0
-  $ aube outdated
-  All dependencies up to date.

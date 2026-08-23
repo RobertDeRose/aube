@@ -10,13 +10,10 @@ Reads the lockfile, computes the packages still reachable from each importer, an
 
 ## Flags
 
-### `-P --prod`
+### `-P --prod --production`
 
 Remove devDependencies from node_modules
 
 ### `--no-optional`
 
 Also remove optionalDependencies
-
-Global store cleanup: use `aube store prune` to clean unreferenced files from the global
-content-addressable store.

@@ -19,7 +19,7 @@ Accepts either a pnpm canonical name (e.g. `autoInstallPeers`) or an `.npmrc` al
 
 ### `--local`
 
-Shortcut for `--location project`
+Shortcut for `--location project`.
 
 ### `--location <LOCATION>`
 

@@ -24,7 +24,7 @@ Matches `pnpm config get --json`: a missing key renders as `undefined`, a found 
 
 ### `--local`
 
-Shortcut for `--location project`
+Shortcut for `--location project`.
 
 ### `--location <LOCATION>`
 

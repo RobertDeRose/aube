@@ -10,7 +10,7 @@ Publish the current package to the registry
 
 ### `[TARBALL|FOLDER]`
 
-Tarball or package directory to publish (default: current package)
+Tarball or package directory to publish (default: current package).
 
 ## Flags
 
@@ -22,7 +22,7 @@ Sent as the `access` field in the publish body; scoped packages default to `rest
 
 ### `--dry-run`
 
-Don't upload; print what would be published
+Don't upload; print what would be published.
 
 ### `--force`
 
@@ -62,7 +62,9 @@ Requires an OIDC-capable CI environment (GitHub Actions with `id-token: write`, 
 
 ### `--tag <TAG>`
 
-Default dist-tag to publish under (default: `latest`)
+Default dist-tag to publish under (default: `latest`).
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -74,7 +76,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 

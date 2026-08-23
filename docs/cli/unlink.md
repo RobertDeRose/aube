@@ -2,6 +2,7 @@
 # `aube unlink`
 
 - **Usage**: `aube unlink [-g --global] [PACKAGE]`
+- **Aliases**: `dislink`
 - **Effect**: modifies state
 
 Unlink a package (remove linked entries from node_modules)

@@ -2,6 +2,7 @@
 # `aube login`
 
 - **Usage**: `aube login [FLAGS]`
+- **Aliases**: `adduser`
 - **Effect**: modifies state
 
 Store a registry auth token in the user's ~/.npmrc
@@ -10,7 +11,7 @@ Store a registry auth token in the user's ~/.npmrc
 
 ### `--auth-type <TYPE>`
 
-Authentication flow: `legacy` (token paste; default) or `web` (OAuth flow against `{registry}/-/v1/login`)
+Authentication flow: `legacy` (token paste; default) or `web` (OAuth flow against `{registry}/-/v1/login`).
 
 **Default:** `legacy`
 
@@ -19,6 +20,8 @@ Authentication flow: `legacy` (token paste; default) or `web` (OAuth flow agains
 Scope to bind this registry to (e.g. `@myorg`).
 
 When set, the scope->registry mapping is also written to `~/.npmrc`.
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -30,7 +33,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 

@@ -24,9 +24,9 @@ One of: `info`, `low`, `moderate`, `high`, `critical`. Defaults to `audit.level`
 
 ### `-D --dev`
 
-Only audit `devDependencies`
+Only audit `devDependencies`.
 
-### `--fix <FIX>`
+### `--fix [FIX]`
 
 Fix advisories.
 
@@ -57,19 +57,21 @@ Filters out advisories for which no non-vulnerable version is available in the p
 
 ### `-i --interactive`
 
-Pick which advisories to fix interactively
+Pick which advisories to fix interactively.
 
 ### `--json`
 
-Emit the report as JSON (pnpm-compatible shape) instead of a table
+Emit the report as JSON (pnpm-compatible shape) instead of a table.
 
 ### `--no-optional`
 
-Skip `optionalDependencies`
+Skip `optionalDependencies`.
 
-### `-P --prod`
+### `-P --prod --production`
 
-Only audit `dependencies` and `optionalDependencies`
+Only audit `dependencies` and `optionalDependencies`.
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -81,7 +83,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 
@@ -106,25 +108,3 @@ Overrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml`
 Override the default registry URL for this invocation.
 
 Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
-
-Examples:
-
-  $ aube audit
-  Severity  Package    Vulnerable  Title
-  moderate  minimatch  <3.0.5      Regular Expression Denial of Service
-                                   https://github.com/advisories/GHSA-f8q6-p94x
-
-  1 vulnerability found
-
-  # Only fail on high and above
-  $ aube audit --audit-level high
-
-  # Skip optional deps and dev deps
-  $ aube audit --prod --no-optional
-
-  # Pipe into jq
-  $ aube audit --json | jq '.advisories | length'
-
-  # Clean
-  $ aube audit
-  No known vulnerabilities found

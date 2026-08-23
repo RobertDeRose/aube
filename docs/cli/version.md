@@ -18,15 +18,15 @@ Accepts `major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelea
 
 ### `--allow-same-version`
 
-Allow setting the version to its current value without erroring
+Allow setting the version to its current value without erroring.
 
 ### `--ignore-scripts`
 
-Skip `preversion` / `version` / `postversion` lifecycle scripts
+Skip `preversion` / `version` / `postversion` lifecycle scripts.
 
 ### `--json`
 
-Emit the result as JSON instead of `v<version>` text
+Emit the result as JSON instead of `v<version>` text.
 
 ### `-m --message <MSG>`
 
@@ -36,7 +36,7 @@ Commit message template.
 
 ### `--no-commit-hooks`
 
-Skip git pre-commit / commit-msg hooks (passes `--no-verify`)
+Skip git pre-commit / commit-msg hooks (passes `--no-verify`).
 
 ### `--no-git-tag-version`
 
@@ -46,8 +46,8 @@ By default `aube version` commits the manifest change and tags it `v<version>`.
 
 ### `--preid <ID>`
 
-Prerelease identifier to use with the `pre*` keywords (e.g. `rc`)
+Prerelease identifier to use with the `pre*` keywords (e.g. `rc`).
 
 ### `--sign-git-tag`
 
-GPG-sign the created tag (`git tag -s`)
+GPG-sign the created tag (`git tag -s`).

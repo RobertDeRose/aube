@@ -14,7 +14,7 @@ Don't write the tarball; print what would be packed
 
 ### `--ignore-scripts`
 
-Skip `prepack` / `prepare` / `postpack` lifecycle scripts
+Skip `prepack` / `prepare` / `postpack` lifecycle scripts.
 
 ### `--json`
 
@@ -23,6 +23,8 @@ Print the result as a JSON object
 ### `--pack-destination <DIR>`
 
 Directory to write the tarball into (default: current directory)
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -34,7 +36,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 

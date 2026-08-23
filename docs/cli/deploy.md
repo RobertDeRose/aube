@@ -26,7 +26,7 @@ Implemented by stripping `dependencies` and `optionalDependencies` from the depl
 
 Skip `optionalDependencies`
 
-### `-P --prod`
+### `-P --prod --production`
 
 Install only production dependencies (default).
 
@@ -46,19 +46,23 @@ Never hits the network. Useful in multi-stage Dockerfiles where an earlier `aube
 
 ### `--prefer-offline`
 
-Prefer cached metadata over revalidation; only hit the network on a miss
+Prefer cached metadata over revalidation; only hit the network on a miss.
+
+## Lockfile
 
 ### `--frozen-lockfile`
 
-Error if the lockfile drifts from package.json
+Error if the lockfile drifts from package.json.
 
 ### `--no-frozen-lockfile`
 
-Always re-resolve, even if the lockfile is up to date
+Always re-resolve, even if the lockfile is up to date.
 
 ### `--prefer-frozen-lockfile`
 
-Use the lockfile when fresh, re-resolve when stale
+Use the lockfile when fresh, re-resolve when stale.
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -70,7 +74,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 
@@ -96,13 +100,15 @@ Override the default registry URL for this invocation.
 
 Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
 
-### `--disable-global-virtual-store`
+## Virtual store
+
+### `--disable-global-virtual-store --disable-gvs`
 
 Force the shared global virtual store off for this invocation.
 
 Packages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`.
 
-### `--enable-global-virtual-store`
+### `--enable-global-virtual-store --enable-gvs`
 
 Force the shared global virtual store on for this invocation.
 

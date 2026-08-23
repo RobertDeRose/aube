@@ -22,6 +22,8 @@ Emit machine-readable JSON instead of a plain text listing.
 
 Output is an array of `{ "name", "version", "path" }` objects.
 
+## Network
+
 ### `--fetch-retries <N>`
 
 Number of retry attempts for failed registry fetches.
@@ -32,7 +34,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 
@@ -57,16 +59,3 @@ Overrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml`
 Override the default registry URL for this invocation.
 
 Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
-
-Examples:
-
-  # Accepts integrity strings
-  $ aube find-hash sha512-abc123...
-  lodash@4.17.21	package/lodash.js
-  express@4.19.2	node_modules/lodash/lodash.js
-
-  # ...or raw hex digests
-  $ aube find-hash 5d41402abc4b2a76b9719d911017c592...
-
-  # Machine-readable
-  $ aube find-hash --json sha512-abc123...

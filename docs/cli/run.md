@@ -2,6 +2,7 @@
 # `aube run`
 
 - **Usage**: `aube run [FLAGS] [SCRIPT] [ARGS]…`
+- **Aliases**: `run-script`
 
 Run a script defined in package.json
 
@@ -23,13 +24,13 @@ Arguments to pass to the script
 
 Don't error if the script is missing from package.json
 
-### `--inspect [[HOST:]PORT]`
+### `--inspect[=[[HOST:]PORT]]`
 
-Forward `--inspect` to a Node-backed script or local binary
+Forward `--inspect` to a Node-backed script or local binary.
 
-### `--inspect-brk [[HOST:]PORT]`
+### `--inspect-brk[=[[HOST:]PORT]]`
 
-Forward `--inspect-brk` to a Node-backed script or local binary
+Forward `--inspect-brk` to a Node-backed script or local binary.
 
 ### `--no-bail`
 
@@ -95,17 +96,21 @@ Cap the number of recursive packages running at once.
 
 Setting this implicitly enables parallel mode at width `N`. `0` means "use the available CPU count". Without this flag, `--parallel` stays unbounded.
 
+## Lockfile
+
 ### `--frozen-lockfile`
 
-Error if the lockfile drifts from package.json
+Error if the lockfile drifts from package.json.
 
 ### `--no-frozen-lockfile`
 
-Always re-resolve, even if the lockfile is up to date
+Always re-resolve, even if the lockfile is up to date.
 
 ### `--prefer-frozen-lockfile`
 
-Use the lockfile when fresh, re-resolve when stale
+Use the lockfile when fresh, re-resolve when stale.
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -117,7 +122,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 
@@ -143,13 +148,15 @@ Override the default registry URL for this invocation.
 
 Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
 
-### `--disable-global-virtual-store`
+## Virtual store
+
+### `--disable-global-virtual-store --disable-gvs`
 
 Force the shared global virtual store off for this invocation.
 
 Packages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`.
 
-### `--enable-global-virtual-store`
+### `--enable-global-virtual-store --enable-gvs`
 
 Force the shared global virtual store on for this invocation.
 

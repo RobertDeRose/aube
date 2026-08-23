@@ -33,7 +33,7 @@ Installs into the aube/pnpm global directory and links its binaries into the glo
 
 Add as optional dependency
 
-### `--allow-build… <PKG>`
+### `--allow-build…=<PKG>`
 
 Pre-approve a dependency's lifecycle scripts as part of the add.
 
@@ -53,7 +53,7 @@ Allow every dependency's lifecycle scripts to run.
 
 Bypasses the `allowBuilds` allowlist for this invocation. Do not use in CI. Mirrors pnpm's `--dangerously-allow-all-builds`.
 
-### `--deny-build… <PKG>`
+### `--deny-build…=<PKG>`
 
 Mark a dependency's lifecycle scripts as reviewed and denied.
 
@@ -115,17 +115,21 @@ Allow `add` to run in a workspace root.
 
 By default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`.
 
+## Lockfile
+
 ### `--frozen-lockfile`
 
-Error if the lockfile drifts from package.json
+Error if the lockfile drifts from package.json.
 
 ### `--no-frozen-lockfile`
 
-Always re-resolve, even if the lockfile is up to date
+Always re-resolve, even if the lockfile is up to date.
 
 ### `--prefer-frozen-lockfile`
 
-Use the lockfile when fresh, re-resolve when stale
+Use the lockfile when fresh, re-resolve when stale.
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -137,7 +141,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 
@@ -163,13 +167,15 @@ Override the default registry URL for this invocation.
 
 Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
 
-### `--disable-global-virtual-store`
+## Virtual store
+
+### `--disable-global-virtual-store --disable-gvs`
 
 Force the shared global virtual store off for this invocation.
 
 Packages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`.
 
-### `--enable-global-virtual-store`
+### `--enable-global-virtual-store --enable-gvs`
 
 Force the shared global virtual store on for this invocation.
 

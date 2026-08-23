@@ -1,7 +1,5 @@
-use clap::Args;
-
-#[derive(Debug, Args)]
-pub struct SponsorsArgs {}
+#[derive(Debug, usage_rs::Args)]
+pub struct SponsorsArgs;
 
 pub async fn run(_args: SponsorsArgs) -> miette::Result<()> {
     println!(

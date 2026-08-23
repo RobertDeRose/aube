@@ -15,7 +15,6 @@
 //! Exits with status 1 when at least one broken link is found, so it's
 //! CI-friendly as a post-install gate.
 
-use clap::Args;
 use miette::IntoDiagnostic;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -41,10 +40,10 @@ Examples:
   $ aube check --json
 ";
 
-#[derive(Debug, Args)]
+#[derive(Debug, usage_rs::Args)]
 pub struct CheckArgs {
     /// Emit a JSON report instead of the human-readable list.
-    #[arg(long)]
+    #[usage(long)]
     pub json: bool,
 }
 

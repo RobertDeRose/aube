@@ -9,7 +9,6 @@
 //!
 //! Pure read — no network, no writes, no project lock.
 
-use clap::Args;
 use miette::{Context, IntoDiagnostic};
 use std::collections::BTreeSet;
 
@@ -29,10 +28,10 @@ Examples:
   $ aube approve-builds
 ";
 
-#[derive(Debug, Args)]
+#[derive(Debug, usage_rs::Args)]
 pub struct IgnoredBuildsArgs {
     /// Operate on globally-installed packages instead of the current project.
-    #[arg(short = 'g', long)]
+    #[usage(short = 'g', long)]
     pub global: bool,
 }
 

@@ -2,7 +2,7 @@
 # `aube view`
 
 - **Usage**: `aube view [FLAGS] [PACKAGE] [FIELD]`
-- **Aliases**: `info`, `show`
+- **Aliases**: `info`, `show`, `v`
 - **Effect**: read-only
 
 Print package metadata from the registry
@@ -29,6 +29,8 @@ Print the full JSON of the selected version instead of the summary.
 
 Mutually exclusive with `field`.
 
+## Network
+
 ### `--fetch-retries <N>`
 
 Number of retry attempts for failed registry fetches.
@@ -39,7 +41,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 

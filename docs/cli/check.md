@@ -12,23 +12,4 @@ Walks the `node_modules/` symlink tree and confirms every dependency in each `pa
 
 ### `--json`
 
-Emit a JSON report instead of the human-readable list
-
-Examples:
-
-  $ aube check
-  node_modules symlink tree is consistent (checked 248 packages).
-
-  # With issues
-  $ aube check
-  2 broken dependency links found:
-
-    vscode-languageserver@9.0.1
-      ✕ cannot resolve: vscode-languageserver-protocol@3.17.5
-
-    vscode-languageserver-protocol@3.17.5
-      ✕ cannot resolve: vscode-languageserver-types@3.17.5
-      ✕ cannot resolve: vscode-jsonrpc@8.2.1
-
-  # Machine-readable
-  $ aube check --json
+Emit a JSON report instead of the human-readable list.

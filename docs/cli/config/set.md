@@ -10,17 +10,17 @@ Write a key=value pair to aube config or the selected `.npmrc` file
 
 ### `<KEY>`
 
-Setting key (canonical name or `.npmrc` alias)
+Setting key (canonical name or `.npmrc` alias).
 
 ### `<VALUE>`
 
-Value to write. Stored verbatim after `key=`
+Value to write. Stored verbatim after `key=`.
 
 ## Flags
 
 ### `--local`
 
-Shortcut for `--location project`
+Shortcut for `--location project`.
 
 ### `--location <LOCATION>`
 

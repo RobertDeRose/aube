@@ -11,9 +11,9 @@ Open package bug tracker URLs
 
 ### `[PACKAGES]…`
 
-Packages to open bug trackers for. Defaults to the current project
+Packages to open bug trackers for. Defaults to the current project.
 
-## Flags
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -25,7 +25,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 

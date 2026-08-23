@@ -2,6 +2,7 @@
 # `aube install`
 
 - **Usage**: `aube install [FLAGS]`
+- **Aliases**: `i`
 - **Effect**: modifies state
 
 Install all dependencies
@@ -12,7 +13,7 @@ Install all dependencies
 
 Install only devDependencies
 
-### `-P --prod`
+### `-P --prod --production`
 
 Skip devDependencies; install only production deps
 
@@ -24,7 +25,7 @@ Bypasses the `allowBuilds` allowlist. Do not use in CI.
 
 ### `--dry-run`
 
-Resolve and report what would happen without writing the lockfile or linking node_modules
+Resolve and report what would happen without writing the lockfile or linking node_modules.
 
 ### `--fix-lockfile`
 
@@ -82,7 +83,7 @@ Skip optionalDependencies; don't install optional native modules
 
 ### `--no-side-effects-cache`
 
-Inverse of `--side-effects-cache`
+Inverse of `--side-effects-cache`.
 
 ### `--no-verify-store-integrity`
 
@@ -116,7 +117,7 @@ Mirrors pnpm's `--pnpmfile <path>`. Relative paths resolve against the project r
 
 ### `--prefer-offline`
 
-Prefer cached metadata over revalidation; only hit the network on a miss
+Prefer cached metadata over revalidation; only hit the network on a miss.
 
 ### `--public-hoist-pattern… <GLOB>`
 
@@ -148,17 +149,21 @@ Verify tarball SHA-512 before importing into the store.
 
 Checks each tarball against the lockfile integrity. Defaults to `true` (pnpm parity); pair with `--no-verify-store-integrity` to skip.
 
+## Lockfile
+
 ### `--frozen-lockfile`
 
-Error if the lockfile drifts from package.json
+Error if the lockfile drifts from package.json.
 
 ### `--no-frozen-lockfile`
 
-Always re-resolve, even if the lockfile is up to date
+Always re-resolve, even if the lockfile is up to date.
 
 ### `--prefer-frozen-lockfile`
 
-Use the lockfile when fresh, re-resolve when stale
+Use the lockfile when fresh, re-resolve when stale.
+
+## Network
 
 ### `--fetch-retries <N>`
 
@@ -170,7 +175,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by the CLI parser.
 
 ### `--fetch-retry-maxtimeout <MS>`
 
@@ -196,13 +201,15 @@ Override the default registry URL for this invocation.
 
 Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
 
-### `--disable-global-virtual-store`
+## Virtual store
+
+### `--disable-global-virtual-store --disable-gvs`
 
 Force the shared global virtual store off for this invocation.
 
 Packages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`.
 
-### `--enable-global-virtual-store`
+### `--enable-global-virtual-store --enable-gvs`
 
 Force the shared global virtual store on for this invocation.
 
